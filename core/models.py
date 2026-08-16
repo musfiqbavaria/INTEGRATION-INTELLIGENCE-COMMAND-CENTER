@@ -19,12 +19,19 @@ class EmailCampaign(Timestamped):
     name=models.CharField(max_length=180); subject=models.CharField(max_length=220); preview_text=models.CharField(max_length=260,blank=True); content=models.TextField(); segment=models.CharField(max_length=120); status=models.CharField(max_length=30,default="draft"); recipients=models.PositiveIntegerField(default=0); opens=models.PositiveIntegerField(default=0); clicks=models.PositiveIntegerField(default=0); failures=models.PositiveIntegerField(default=0); scheduled_at=models.DateTimeField(null=True,blank=True); sent_at=models.DateTimeField(null=True,blank=True)
 class Automation(Timestamped):
     name=models.CharField(max_length=180); trigger=models.CharField(max_length=220); conditions=models.JSONField(default=list); actions=models.JSONField(default=list); status=models.CharField(max_length=30,default="active"); runs=models.PositiveIntegerField(default=0); successes=models.PositiveIntegerField(default=0); failures=models.PositiveIntegerField(default=0); last_run_at=models.DateTimeField(null=True,blank=True)
+    run_every_minutes=models.PositiveIntegerField(default=60,help_text="Scheduler runs this workflow when it has not run for this many minutes.")
+    @property
+    def is_due(self):
+        if self.status!="active": return False
+        if not self.last_run_at: return True
+        return self.last_run_at<=timezone.now()-timezone.timedelta(minutes=self.run_every_minutes or 60)
 class Integration(Timestamped):
     name=models.CharField(max_length=160); provider=models.CharField(max_length=120); category=models.CharField(max_length=80); status=models.CharField(max_length=30,default="pending"); config=models.JSONField(default=dict,blank=True); last_sync_at=models.DateTimeField(null=True,blank=True); last_error=models.TextField(blank=True)
 class FinancialRecord(Timestamped):
     recorded_on=models.DateField(default=timezone.localdate); market=models.CharField(max_length=80); system=models.CharField(max_length=120); campaign=models.CharField(max_length=180); channel=models.CharField(max_length=80); revenue=models.DecimalField(max_digits=14,decimal_places=2,default=0); cost=models.DecimalField(max_digits=14,decimal_places=2,default=0); leads=models.PositiveIntegerField(default=0); customers=models.PositiveIntegerField(default=0)
 class AeoEntry(Timestamped):
     question=models.TextField(); answer=models.TextField(); topic=models.CharField(max_length=160); market=models.CharField(max_length=80,default="Ireland"); language=models.CharField(max_length=20,default="en-IE"); status=models.CharField(max_length=30,default="draft"); schema_type=models.CharField(max_length=80,default="FAQPage"); authority_score=models.PositiveSmallIntegerField(default=0); citations=models.JSONField(default=list)
+    published_at=models.DateTimeField(null=True,blank=True)
 class AiDecision(Timestamped):
     decision_id=models.CharField(max_length=50,unique=True); engine=models.CharField(max_length=160); title=models.CharField(max_length=220); recommendation=models.TextField(); evidence=models.JSONField(default=list); confidence=models.PositiveSmallIntegerField(); impact=models.CharField(max_length=20); risk_score=models.PositiveSmallIntegerField(); governance_level=models.CharField(max_length=30); status=models.CharField(max_length=30,default="pending"); expected_outcome=models.TextField(blank=True); decided_at=models.DateTimeField(null=True,blank=True); owner=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL)
 class WhatsAppTemplate(Timestamped):

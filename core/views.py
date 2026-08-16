@@ -1,4 +1,4 @@
-import json, secrets
+import hashlib, hmac, json, secrets
 from decimal import Decimal
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
@@ -11,12 +11,19 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from django_ratelimit.decorators import ratelimit
 from .models import *
 from .services import test_integration, run_ai_engine, send_whatsapp_template
 from .tasks import send_campaign, execute_workflow
 
 MODELS={"leads":Lead,"campaigns":Campaign,"content":ContentItem,"email-marketing":EmailCampaign,"automations":Automation,"integrations":Integration,"finance":FinancialRecord,"aeo":AeoEntry,"intelligence":AiDecision,"whatsapp":WhatsAppTemplate,"settings":Setting,"audit":AuditLog,"support":SupportTicket}
 DISPLAY_SKIP={"id","password","config","old_values","new_values"}
+# Accounts, credentials and the audit trail are owner-only.
+SUPERUSER_ONLY={"users","audit","settings"}
+# The audit trail and the analytics report are never edited through the UI.
+READONLY_SLUGS={"audit","analytics"}
+# Health-check slug -> the Integration.category it belongs to.
+SERVICE_CATEGORY={"database":"Database","smtp":"Email","whatsapp":"WhatsApp","openai":"AI"}
 
 def _cell(field,value):
     """One table cell: a display string plus a kind that drives alignment and badges."""
@@ -36,10 +43,30 @@ def _cell(field,value):
     return {"value":text[:180]+("…" if len(text)>180 else ""),"kind":"text"}
 TITLES={"leads":"Leads & Customers","campaigns":"Campaigns","content":"Content Center","email-marketing":"Email Marketing","automations":"Automation & Workflows","integrations":"Integration Center","finance":"Finance & Profitability","aeo":"AI Optimized Marketing (AEO)","intelligence":"AI Intelligence Suite","whatsapp":"WhatsApp Center","settings":"Settings & Preferences","audit":"Audit Logs","support":"Help Desk & Support"}
 
+@ratelimit(key="ip",rate="10/m",method="POST",block=False)
+@ratelimit(key="post:email",rate="5/m",method="POST",block=False)
 def login_view(request):
+    """Owner sign-in, rate limited per IP and per submitted address.
+
+    Without this the only barrier to the owner account is password strength,
+    and the account carries superuser rights.
+    """
     if request.method=="POST":
+        if getattr(request,"limited",False):
+            AuditLog.objects.create(event="auth.rate_limited",path=request.path,method="POST",
+                                    ip_address=request.META.get("REMOTE_ADDR"),
+                                    new_values={"email":request.POST.get("email","")[:150]})
+            messages.error(request,"Too many sign-in attempts. Please wait a minute and try again.")
+            return render(request,"login.html",status=429)
         user=authenticate(request,username=request.POST.get("email"),password=request.POST.get("password"))
-        if user: login(request,user); return redirect("dashboard")
+        if user:
+            login(request,user)
+            AuditLog.objects.create(user=user,event="auth.login",path=request.path,method="POST",
+                                    ip_address=request.META.get("REMOTE_ADDR"))
+            return redirect("dashboard")
+        AuditLog.objects.create(event="auth.login_failed",path=request.path,method="POST",
+                                ip_address=request.META.get("REMOTE_ADDR"),
+                                new_values={"email":request.POST.get("email","")[:150]})
         messages.error(request,"Invalid email or password")
     return render(request,"login.html")
 @require_POST
@@ -167,14 +194,42 @@ def dashboard(request):
 
 @login_required
 def module(request,slug):
-    readonly=slug=="analytics"
-    if readonly: model=FinancialRecord
+    if slug in SUPERUSER_ONLY and not request.user.is_superuser:
+        return HttpResponse("Not permitted",status=403)
+    readonly=slug in READONLY_SLUGS
+    if slug=="analytics": model=FinancialRecord
     elif slug in {"users","help"}: model=User if slug=="users" else SupportTicket
     else: model=MODELS.get(slug)
     if not model: return HttpResponse("Not found",status=404)
     if request.method=="POST":
         action=request.POST.get("action","create")
-        if action=="delete": model.objects.filter(pk=request.POST.get("id")).delete()
+        if readonly:
+            messages.error(request,"This record set is read-only.")
+            return redirect("module",slug=slug)
+        if action=="delete":
+            if slug=="users":
+                target=User.objects.filter(pk=request.POST.get("id")).first()
+                if target is None: messages.error(request,"User not found")
+                elif target.pk==request.user.pk: messages.error(request,"You cannot delete your own account")
+                elif target.is_superuser and User.objects.filter(is_superuser=True).count()<=1:
+                    messages.error(request,"The last owner account cannot be deleted")
+                else: target.delete(); messages.success(request,"User deleted")
+            else:
+                model.objects.filter(pk=request.POST.get("id")).delete()
+        elif slug=="users":
+            # Accounts are created through create_user so the password is hashed.
+            # Staff and superuser rights are deliberately NOT settable from this
+            # form; grant them in the Django admin instead.
+            username=(request.POST.get("username") or "").strip()
+            password=request.POST.get("password") or ""
+            if not username or not password:
+                messages.error(request,"Username and password are required")
+            elif User.objects.filter(username=username).exists():
+                messages.error(request,"That username already exists")
+            else:
+                User.objects.create_user(username=username,email=request.POST.get("email",""),password=password,
+                                         first_name=request.POST.get("first_name",""),last_name=request.POST.get("last_name",""))
+                messages.success(request,"User created without staff or owner rights")
         elif action in {"approve","reject","pause","activate","publish"}:
             obj=get_object_or_404(model,pk=request.POST.get("id")); obj.status={"activate":"active","publish":"published"}.get(action,action+"d" if action in {"approve","reject"} else action); 
             if hasattr(obj,"decided_at"): obj.decided_at=timezone.now()
@@ -191,8 +246,26 @@ def module(request,slug):
     display_fields=[f for f in model._meta.fields if f.name not in DISPLAY_SKIP]
     # Record-keeping timestamps move to the end so identifying columns lead the table.
     display_fields.sort(key=lambda f: f.name in {"created_at","updated_at","date_joined","last_login"})
-    rows=[{"pk":obj.pk,"cells":[_cell(f,getattr(obj,f.name,None)) for f in display_fields]} for obj in items]
-    fields=[] if readonly else [f for f in model._meta.fields if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
+
+    def _row_cells(obj):
+        cells=[]
+        for f in display_fields:
+            # A Setting flagged is_secret must never render its value.
+            if f.name=="value" and getattr(obj,"is_secret",False):
+                cells.append({"value":"•••••••• hidden","kind":"muted"})
+            else:
+                cells.append(_cell(f,getattr(obj,f.name,None)))
+        return cells
+
+    rows=[{"pk":obj.pk,"cells":_row_cells(obj)} for obj in items]
+    if readonly:
+        fields=[]
+    elif slug=="users":
+        # Only the safe subset. is_staff / is_superuser are not offered here.
+        allowed={"username","email","first_name","last_name","password"}
+        fields=[f for f in model._meta.fields if f.name in allowed]
+    else:
+        fields=[f for f in model._meta.fields if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
     total=model.objects.count()
     context={"title":TITLES.get(slug,slug.title()),"slug":slug,"rows":rows,"columns":[f.verbose_name for f in display_fields],
              "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows)}
@@ -253,7 +326,11 @@ def integrations_center(request):
         started=timezone.now()
         try: message=test_integration(service); status="connected"; messages.success(request,message)
         except Exception as exc: message=str(exc); status="failed"; messages.error(request,message)
-        latency=int((timezone.now()-started).total_seconds()*1000); integration=Integration.objects.filter(category__iexact=service).first(); IntegrationCheck.objects.create(integration=integration,service=service,status=status,latency_ms=latency,message=message[:300],checked_by=request.user)
+        latency=int((timezone.now()-started).total_seconds()*1000)
+        # The slug and the stored category differ ("smtp" vs "Email", "openai" vs
+        # "AI"), so matching them directly left those two cards stuck on Pending.
+        integration=Integration.objects.filter(category__iexact=SERVICE_CATEGORY.get(service,service)).first()
+        IntegrationCheck.objects.create(integration=integration,service=service,status=status,latency_ms=latency,message=message[:300],checked_by=request.user)
         if integration: integration.status=status; integration.last_sync_at=timezone.now(); integration.last_error="" if status=="connected" else message; integration.save()
         return redirect("integrations-center")
     return render(request,"integrations_center.html",{"integrations":Integration.objects.order_by("category"),"checks":IntegrationCheck.objects.order_by("-checked_at")[:30]})
@@ -289,15 +366,59 @@ def api_dashboard(request): return JsonResponse({"leads":Lead.objects.count(),"c
 def whatsapp_webhook(request):
     from django.conf import settings
     if request.method=="GET":
-        if request.GET.get("hub.verify_token")==settings.WHATSAPP_VERIFY_TOKEN: return HttpResponse(request.GET.get("hub.challenge",""))
+        token=settings.WHATSAPP_VERIFY_TOKEN
+        # An unset token must never verify, and the comparison is constant-time.
+        if token and secrets.compare_digest(request.GET.get("hub.verify_token",""),token):
+            return HttpResponse(request.GET.get("hub.challenge",""))
         return HttpResponse("Forbidden",status=403)
-    AuditLog.objects.create(event="whatsapp.webhook",new_values={"received":True}); return JsonResponse({"received":True})
+
+    # Meta signs every delivery with the app secret. Without this check the
+    # endpoint accepts writes from anyone who knows the URL.
+    secret=getattr(settings,"WHATSAPP_APP_SECRET","")
+    if secret:
+        signature=request.headers.get("X-Hub-Signature-256","")
+        expected="sha256="+hmac.new(secret.encode(),request.body,hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(signature,expected):
+            AuditLog.objects.create(event="whatsapp.webhook.rejected",new_values={"reason":"bad signature"})
+            return HttpResponse("Invalid signature",status=403)
+
+    try: payload=json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error":"invalid JSON"},status=400)
+
+    updated=0
+    for entry in payload.get("entry",[]):
+        for change in entry.get("changes",[]):
+            for status in change.get("value",{}).get("statuses",[]):
+                message_id=status.get("id"); state=status.get("status")
+                if not message_id or not state: continue
+                delivery=MessageDelivery.objects.filter(channel="whatsapp",external_id=message_id).first()
+                if delivery is None: continue
+                delivery.status=state
+                if state=="failed":
+                    errors=status.get("errors") or [{}]
+                    delivery.error=str(errors[0].get("title") or errors[0])[:1000]
+                delivery.save(update_fields=["status","error","updated_at"])
+                updated+=1
+                # Keep the template counters in step with real delivery receipts.
+                template=WhatsAppTemplate.objects.filter(name=delivery.template).first()
+                if template:
+                    if state=="delivered": WhatsAppTemplate.objects.filter(pk=template.pk).update(delivered=template.delivered+1)
+                    elif state=="read": WhatsAppTemplate.objects.filter(pk=template.pk).update(read_count=template.read_count+1)
+
+    AuditLog.objects.create(event="whatsapp.webhook",new_values={"statuses_applied":updated})
+    return JsonResponse({"received":True,"updated":updated})
 @csrf_exempt
 @require_POST
 def unsubscribe(request):
     try: payload=json.loads(request.body or b"{}")
     except json.JSONDecodeError: payload=request.POST
-    email=payload.get("email","").strip().lower()
+    email=payload.get("email","").strip()
     if not email: return JsonResponse({"error":"email required"},status=422)
-    Lead.objects.filter(email=email).update(consent_at=None,status="unsubscribed"); ConsentEvent.objects.create(email=email,action="unsubscribe",source="api"); return JsonResponse({"status":"unsubscribed"})
+    # Case-insensitive: addresses are stored as the lead typed them, so an exact
+    # lowercase match silently failed and reported success without unsubscribing.
+    matched=Lead.objects.filter(email__iexact=email).update(consent_at=None,status="unsubscribed")
+    ConsentEvent.objects.create(email=email.lower(),action="unsubscribe",source="api")
+    AuditLog.objects.create(event="consent.unsubscribe",new_values={"email":email.lower(),"leads_updated":matched})
+    return JsonResponse({"status":"unsubscribed","leads_updated":matched})
 def health(request): return JsonResponse({"status":"ok","service":"Emerald Rozalia Marketing Centre","runtime":"Python 3.14.3"})

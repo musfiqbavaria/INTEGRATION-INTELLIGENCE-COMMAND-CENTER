@@ -1,4 +1,4 @@
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.contrib.auth.models import User
 from django.utils import timezone
 from core.models import *
@@ -6,8 +6,17 @@ import os
 class Command(BaseCommand):
     help="Create owner account and operational demonstration data"
     def handle(self,*args,**kwargs):
-        owner,_=User.objects.get_or_create(username="urmos@rozalia.ie",defaults={"email":"urmos@rozalia.ie","first_name":"Emerald","last_name":"Rozalia","is_staff":True,"is_superuser":True})
-        owner.set_password(os.environ.get("OWNER_PASSWORD","ChangeMe-Immediately-2026!")); owner.save()
+        owner,created=User.objects.get_or_create(username="urmos@rozalia.ie",defaults={"email":"urmos@rozalia.ie","first_name":"Emerald","last_name":"Rozalia","is_staff":True,"is_superuser":True})
+        password=os.environ.get("OWNER_PASSWORD","")
+        if created:
+            # Fail loudly rather than falling back to a default that is published
+            # in this repository, and never reset an existing owner's password.
+            if not password:
+                raise CommandError("OWNER_PASSWORD is not set. Export it before seeding so the owner account gets a private password.")
+            owner.set_password(password); owner.save()
+            self.stdout.write(self.style.SUCCESS("Owner account created"))
+        else:
+            self.stdout.write("Owner account already exists — password left unchanged (use `manage.py changepassword` to alter it)")
         campaigns=[("Irish Heritage Autumn Launch","Email","active",4200,24300,1850),("Wholesale Partner Welcome","Email + WhatsApp","scheduled",860,0,420),("Abandoned Basket Recovery","Automation","active",1240,8900,380)]
         for name,channel,status,audience,revenue,cost in campaigns: Campaign.objects.get_or_create(name=name,defaults={"channel":channel,"status":status,"audience_size":audience,"revenue":revenue,"cost":cost})
         leads=[("Aoife","Murphy","aoife@example.ie","Celtic Retail",86),("James","Kelly","james@example.com","Heritage Outfitters",72),("Sofia","Rossi","sofia@example.it","Verde Moda",64)]

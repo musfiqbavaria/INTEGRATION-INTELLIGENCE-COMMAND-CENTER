@@ -27,8 +27,8 @@ Confirm these before touching the server.
 You can deploy without SMTP and WhatsApp; those two features simply fail with a
 clear message until the credentials are filled in. Everything else works.
 
-**Read section 9 before going live.** There is a privilege-escalation defect that
-matters once this is on a public domain.
+**Read section 10 before going live.** It records which defects have been fixed
+and which presentation-only panels remain.
 
 ---
 
@@ -578,40 +578,53 @@ docker compose up -d --force-recreate app worker scheduler
 
 ## 10. Known defects — review before go-live
 
-These were confirmed by testing this codebase, not inferred. None of them block
-the deployment mechanically, but the first one changes the security posture the
-moment this is on a public domain.
+Reviewed and fixed on 2026-08-16. Each item below has a regression test in
+`core/tests.py` (27 tests, all passing).
 
-**Privilege escalation via `/users/` — highest priority.** Any signed-in user can
-POST to `/users/` and create an account with `is_superuser=True`, and can delete
-the owner account. The generic module view has no permission layer beyond
-`login_required`. Today the owner is the only account, which limits exposure, but
-there is also no rate limiting on the login form (`django-ratelimit` is listed in
-`requirements.txt` and never used), so a weak password is the only barrier.
-Mitigate now by keeping `OWNER_PASSWORD` long and unique, and treat adding a
-permission check as the first post-deploy task.
+**Fixed — security**
 
-**Unsubscribe silently fails on mixed-case email addresses.** `/api/consent/unsubscribe`
-lowercases the submitted address then performs a case-sensitive lookup, so a
-request for `Name@Example.ie` returns HTTP 200 `{"status":"unsubscribed"}` while
-the lead stays subscribed. This is a GDPR exposure and should be fixed before the
-unsubscribe link reaches real recipients.
+- `/users/` no longer allows privilege escalation. Accounts, settings and the
+  audit trail are superuser-only; new accounts are created through
+  `create_user()` so the password is hashed; `is_staff` and `is_superuser` are
+  not settable from the form and must be granted in the Django admin.
+- The last owner account, and your own account, can no longer be deleted.
+- The audit trail is read-only through the UI.
+- Settings flagged `is_secret` render as `•••••••• hidden`.
+- Sign-in is rate limited (10/min per IP, 5/min per submitted address) and every
+  attempt, failure and throttle is written to the audit log.
+- The WhatsApp webhook verifies Meta's `X-Hub-Signature-256` against
+  `WHATSAPP_APP_SECRET`, and rejects unsigned posts. Set that variable in `.env`
+  before registering the webhook — the check is skipped while it is blank.
 
-**The WhatsApp webhook accepts unauthenticated POSTs** and discards the payload.
-There is no `X-Hub-Signature-256` verification, and delivery/read receipts are
-never processed, so message statuses will never advance past `sent`.
+**Fixed — correctness**
 
-**Integration cards show the wrong status.** The SMTP and OpenAI health checks
-succeed but never update their card, which stays "Pending" — the view matches the
-service slug (`smtp`, `openai`) against the seeded categories (`Email`, `AI`).
-The connection audit table below the cards shows the true result.
+- Unsubscribe is case-insensitive and returns `leads_updated` so the caller can
+  tell whether anything actually changed.
+- AEO "approve & publish" works; `AeoEntry.published_at` now exists.
+- SMTP and OpenAI health checks update their Integration card instead of leaving
+  it on "Pending".
+- `send_campaign` skips recipients already marked sent, so a Celery retry no
+  longer re-sends to everyone.
 
-**Some dashboard figures are hardcoded** in the template rather than queried:
-active automations (26), WhatsApp volume (24,850), one-man-team mode (98%), the
-risk/impact heatmap and the five attention-card counts. Revenue, profit, leads
-and pending decisions are real.
+**Fixed — the automation engine now does real work**
 
-**`process_due_automations` inflates success metrics.** The scheduled task
-increments `runs` and `successes` for every active automation once a minute
-without evaluating triggers or executing actions — about 1,440 fabricated
-successful runs per automation per day.
+- `execute_workflow` executes a defined action vocabulary — send email, score
+  lead, owner summary, send WhatsApp — and records each action as
+  `completed`, `skipped` (with a reason) or `failed`. Conditions are evaluated
+  against the triggering lead and can block the run.
+- `process_due_automations` queues only automations that are actually due, based
+  on the new `Automation.run_every_minutes` field. It no longer increments
+  `runs`/`successes` for every active automation once a minute.
+- `seed_system` fails loudly when `OWNER_PASSWORD` is missing instead of falling
+  back to a default published in this repository, and never resets an existing
+  owner's password.
+
+**Still outstanding**
+
+- Some dashboard panels remain presentational: the decision pipeline's decay
+  curve, radar and forecast-trend blocks are illustrations, not computed series.
+  Every KPI tile, the risk matrix, summary cards and the attention queue are
+  database-backed.
+- Sparklines and the "vs Last 30 Days" deltas are computed correctly but need
+  more than one `FinancialRecord` before they show a meaningful trend.
+- `WHATSAPP_BUSINESS_ACCOUNT_ID` is read into settings and used nowhere.
