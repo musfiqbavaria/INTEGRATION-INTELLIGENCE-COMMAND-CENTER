@@ -1,16 +1,21 @@
 from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
+
 from django.contrib.auth.models import User
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from .models import (
-    AeoEntry, AttentionItem, Automation, AuditLog, EmailCampaign, Integration,
-    IntegrationCheck, Lead, MessageDelivery, Setting, WhatsAppTemplate, WorkflowRun,
+    AeoEntry, AttentionItem, Automation, AuditLog, ConsentEvent, EmailCampaign,
+    Integration, IntegrationCheck, Lead, MessageDelivery, Setting, WhatsAppTemplate,
+    WorkflowRun,
 )
-from .tasks import (build_digest, execute_workflow, process_due_automations,
-                    send_campaign, send_owner_digest, sweep_overdue_attention)
+from .segments import resolve as resolve_segment
+from .tasks import (build_digest, execute_workflow, expire_stale_consent, flag_dormant_leads,
+                    parse_wait, process_bounces, process_due_automations, send_campaign,
+                    send_owner_digest, send_scheduled_campaigns, sweep_overdue_attention)
 
 
 class ApplicationTests(TestCase):
@@ -165,14 +170,16 @@ class WorkflowEngineTests(TestCase):
         automation = Automation.objects.create(name="Welcome", trigger="Lead created", conditions=["consent confirmed"],
                                                actions=["Send welcome email", "Assign lead score",
                                                         "Wait 20 hours", "Fly to the moon"], status="active")
-        execute_workflow(automation.pk, {"lead_id": self.lead.pk})
+        with patch("core.tasks.execute_workflow.apply_async"):
+            execute_workflow(automation.pk, {"lead_id": self.lead.pk})
         run = WorkflowRun.objects.get(automation=automation)
         outcomes = {r["action"]: r["status"] for r in run.actions_completed}
         self.assertEqual(outcomes["Send welcome email"], "completed")
         self.assertEqual(outcomes["Assign lead score"], "completed")
-        self.assertEqual(outcomes["Wait 20 hours"], "skipped")
-        self.assertEqual(outcomes["Fly to the moon"], "skipped")
-        self.assertEqual(run.status, "completed")
+        # The wait now pauses the sequence rather than being ignored.
+        self.assertEqual(outcomes["Wait 20 hours"], "waiting")
+        self.assertNotIn("Fly to the moon", outcomes)
+        self.assertEqual(run.status, "waiting")
 
     def test_email_action_actually_sends(self):
         automation = Automation.objects.create(name="Welcome", trigger="t", conditions=[],
@@ -535,3 +542,311 @@ class OwnerDigestTests(TestCase):
         self.assertTrue(message.alternatives, "digest should carry an HTML part")
         self.assertEqual(result["critical"], 1)
         self.assertTrue(AuditLog.objects.filter(event="digest.sent").exists())
+
+
+class SegmentTests(TestCase):
+    """The segment field must select the audience, not decorate the form."""
+
+    def setUp(self):
+        now = timezone.now()
+        self.wholesale = Lead.objects.create(first_name="W", last_name="One", email="w1@example.ie",
+                                             company="Celtic Retail", market="Ireland",
+                                             source="Website", status="qualified", score=80,
+                                             consent_at=now)
+        self.retail = Lead.objects.create(first_name="R", last_name="Two", email="r2@example.ie",
+                                          company="", market="Ireland", source="Instagram",
+                                          status="new", score=30, consent_at=now)
+        self.italy = Lead.objects.create(first_name="I", last_name="Three", email="i3@example.it",
+                                         company="Verde Moda", market="Italy", source="Website",
+                                         status="new", score=60, consent_at=now)
+        # Never contactable: no consent.
+        Lead.objects.create(first_name="N", last_name="Four", email="n4@example.ie")
+
+    def test_blank_and_all_mean_every_consented_lead(self):
+        for value in ["", "all", "Consented leads"]:
+            queryset, _, unknown = resolve_segment(value)
+            self.assertEqual(queryset.count(), 3, value)
+            self.assertEqual(unknown, [])
+
+    def test_no_segment_can_reach_a_lead_without_consent(self):
+        queryset, _, _ = resolve_segment("all")
+        self.assertNotIn("n4@example.ie", [l.email for l in queryset])
+
+    def test_wholesale_and_retail(self):
+        self.assertEqual(resolve_segment("wholesale")[0].count(), 2)
+        self.assertEqual(resolve_segment("retail")[0].count(), 1)
+
+    def test_field_and_score_rules_combine(self):
+        self.assertEqual(resolve_segment("market:Ireland")[0].count(), 2)
+        self.assertEqual(resolve_segment("status:qualified")[0].count(), 1)
+        self.assertEqual(resolve_segment("score>=70")[0].count(), 1)
+        combined = resolve_segment("market:Ireland, wholesale")[0]
+        self.assertEqual(combined.count(), 1)
+        self.assertEqual(combined.first().email, "w1@example.ie")
+
+    def test_unknown_segment_sends_to_nobody(self):
+        queryset, _, unknown = resolve_segment("purple squirrels")
+        self.assertEqual(queryset.count(), 0)
+        self.assertEqual(unknown, ["purple squirrels"])
+
+    def test_campaign_send_uses_the_segment(self):
+        campaign = EmailCampaign.objects.create(name="Wholesale only", subject="S",
+                                                content="<p>hi</p>", segment="wholesale")
+        result = send_campaign(campaign.pk)
+        self.assertEqual(result["sent"], 2)
+        self.assertEqual(sorted(m.to[0] for m in mail.outbox), ["i3@example.it", "w1@example.ie"])
+
+    def test_unrecognised_segment_sends_nothing(self):
+        campaign = EmailCampaign.objects.create(name="Bad", subject="S", content="x",
+                                                segment="not a real segment")
+        send_campaign(campaign.pk)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class ScheduledCampaignTests(TestCase):
+    def setUp(self):
+        Lead.objects.create(first_name="A", last_name="B", email="a@example.ie",
+                            consent_at=timezone.now())
+
+    def test_due_campaign_is_queued(self):
+        due = EmailCampaign.objects.create(name="Due", subject="S", content="x", segment="all",
+                                           status="scheduled",
+                                           scheduled_at=timezone.now() - timezone.timedelta(minutes=1))
+        result = send_scheduled_campaigns()
+        self.assertEqual(result["queued"], 1)
+        self.assertIn(due.pk, result["ids"])
+
+    def test_future_campaign_is_left_alone(self):
+        EmailCampaign.objects.create(name="Later", subject="S", content="x", segment="all",
+                                     status="scheduled",
+                                     scheduled_at=timezone.now() + timezone.timedelta(hours=3))
+        self.assertEqual(send_scheduled_campaigns()["queued"], 0)
+
+    def test_drafts_are_never_auto_sent(self):
+        EmailCampaign.objects.create(name="Draft", subject="S", content="x", segment="all",
+                                     status="draft",
+                                     scheduled_at=timezone.now() - timezone.timedelta(hours=1))
+        self.assertEqual(send_scheduled_campaigns()["queued"], 0)
+
+
+class WaitStepTests(TestCase):
+    """Wait steps must become real delays, not be skipped."""
+
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="D", last_name="Rip", email="drip@example.ie",
+                                        company="Celtic Retail", phone="0871234567",
+                                        consent_at=timezone.now())
+
+    def test_wait_is_parsed_into_seconds(self):
+        self.assertEqual(parse_wait("Wait 20 hours"), 72000)
+        self.assertEqual(parse_wait("Wait 30 minutes"), 1800)
+        self.assertEqual(parse_wait("Wait 2 days"), 172800)
+        self.assertIsNone(parse_wait("Send welcome email"))
+
+    def test_workflow_pauses_and_schedules_the_remainder(self):
+        automation = Automation.objects.create(
+            name="Basket recovery", trigger="t", conditions=[],
+            actions=["Send recovery email", "Wait 20 hours", "Assign lead score"], status="active")
+        with patch("core.tasks.execute_workflow.apply_async") as later:
+            execute_workflow(automation.pk, {"lead_id": self.lead.pk})
+        run = WorkflowRun.objects.get(automation=automation)
+        self.assertEqual(run.status, "waiting")
+        statuses = [r["status"] for r in run.actions_completed]
+        self.assertEqual(statuses, ["completed", "waiting"])
+        later.assert_called_once()
+        args, kwargs = later.call_args
+        self.assertEqual(args[0], (automation.pk, {"lead_id": self.lead.pk}, 2))
+        self.assertEqual(kwargs["countdown"], 72000)
+
+    def test_resuming_runs_only_the_remaining_steps(self):
+        automation = Automation.objects.create(
+            name="Basket recovery", trigger="t", conditions=[],
+            actions=["Send recovery email", "Wait 20 hours", "Assign lead score"], status="active")
+        execute_workflow(automation.pk, {"lead_id": self.lead.pk}, 2)
+        run = WorkflowRun.objects.filter(automation=automation).latest("started_at")
+        self.assertEqual(run.status, "completed")
+        self.assertEqual([r["action"] for r in run.actions_completed], ["Assign lead score"])
+        self.assertEqual(len(mail.outbox), 0, "the earlier email must not be resent")
+
+    def test_a_trailing_wait_ends_the_sequence(self):
+        automation = Automation.objects.create(name="Trailing", trigger="t", conditions=[],
+                                               actions=["Assign lead score", "Wait 1 hour"],
+                                               status="active")
+        with patch("core.tasks.execute_workflow.apply_async") as later:
+            execute_workflow(automation.pk, {"lead_id": self.lead.pk})
+        later.assert_not_called()
+        run = WorkflowRun.objects.get(automation=automation)
+        self.assertEqual(run.status, "completed")
+
+
+@override_settings(BOUNCE_LIMIT=3, CONSENT_EXPIRY_MONTHS=24, DORMANT_MONTHS=6)
+class DeliverabilityTests(TestCase):
+    """Repeated hard failures must stop the sending, to protect sender reputation."""
+
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="B", last_name="Ounce", email="bounce@example.ie",
+                                        consent_at=timezone.now())
+
+    def _fail(self, times, email="bounce@example.ie"):
+        for _ in range(times):
+            MessageDelivery.objects.create(channel="email", recipient=email, template="t",
+                                           status="failed", error="550 mailbox unavailable")
+
+    def test_below_the_limit_nothing_happens(self):
+        self._fail(2)
+        self.assertEqual(process_bounces()["unsubscribed"], 0)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, "new")
+
+    def test_at_the_limit_the_lead_is_unsubscribed(self):
+        self._fail(3)
+        with self.captureOnCommitCallbacks(execute=True):
+            result = process_bounces()
+        self.assertEqual(result["unsubscribed"], 1)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, "unsubscribed")
+        self.assertIsNone(self.lead.consent_at)
+        self.assertTrue(ConsentEvent.objects.filter(email="bounce@example.ie").exists())
+        self.assertTrue(AttentionItem.objects.filter(category="Deliverability").exists())
+
+    def test_it_does_not_run_twice_on_the_same_lead(self):
+        self._fail(3)
+        with self.captureOnCommitCallbacks(execute=True):
+            process_bounces()
+            second = process_bounces()
+        self.assertEqual(second["unsubscribed"], 0)
+
+    def test_bounce_raises_its_event(self):
+        Automation.objects.create(name="On bounce", trigger="bounce", trigger_event="lead.bounced",
+                                  conditions=[], actions=["Create owner summary"], status="active")
+        self._fail(3)
+        with self.captureOnCommitCallbacks(execute=True):
+            process_bounces()
+        self.assertTrue(WorkflowRun.objects.filter(automation__name="On bounce").exists())
+
+
+@override_settings(CONSENT_EXPIRY_MONTHS=24)
+class ConsentExpiryTests(TestCase):
+    def test_stale_consent_lapses(self):
+        old = Lead.objects.create(first_name="O", last_name="Ld", email="old@example.ie",
+                                  consent_at=timezone.now() - timezone.timedelta(days=800))
+        fresh = Lead.objects.create(first_name="F", last_name="Resh", email="fresh@example.ie",
+                                    consent_at=timezone.now() - timezone.timedelta(days=30))
+        result = expire_stale_consent()
+        self.assertEqual(result["expired"], 1)
+        old.refresh_from_db(); fresh.refresh_from_db()
+        self.assertEqual(old.status, "consent-expired")
+        self.assertIsNone(old.consent_at)
+        self.assertIsNotNone(fresh.consent_at, "recent consent must be left alone")
+        self.assertTrue(AttentionItem.objects.filter(category="Governance / Ethical Alert").exists())
+
+    def test_expired_leads_leave_the_sendable_audience(self):
+        Lead.objects.create(first_name="O", last_name="Ld", email="old@example.ie",
+                            consent_at=timezone.now() - timezone.timedelta(days=800))
+        self.assertEqual(resolve_segment("all")[0].count(), 1)
+        expire_stale_consent()
+        self.assertEqual(resolve_segment("all")[0].count(), 0)
+
+
+@override_settings(DORMANT_MONTHS=6)
+class DormantLeadTests(TestCase):
+    def test_quiet_leads_raise_the_event(self):
+        Automation.objects.create(name="Win back", trigger="dormant", trigger_event="lead.dormant",
+                                  conditions=[], actions=["Create owner summary"], status="active")
+        quiet = Lead.objects.create(first_name="Q", last_name="Uiet", email="quiet@example.ie",
+                                    consent_at=timezone.now())
+        Lead.objects.filter(pk=quiet.pk).update(updated_at=timezone.now() - timezone.timedelta(days=400))
+        with self.captureOnCommitCallbacks(execute=True):
+            result = flag_dormant_leads()
+        self.assertEqual(result["dormant"], 1)
+        self.assertTrue(WorkflowRun.objects.filter(automation__name="Win back").exists())
+
+    def test_recently_contacted_leads_are_not_dormant(self):
+        lead = Lead.objects.create(first_name="A", last_name="Ctive", email="active@example.ie",
+                                   consent_at=timezone.now())
+        Lead.objects.filter(pk=lead.pk).update(updated_at=timezone.now() - timezone.timedelta(days=400))
+        MessageDelivery.objects.create(channel="email", recipient="active@example.ie",
+                                       template="t", status="sent")
+        self.assertEqual(flag_dormant_leads()["dormant"], 0)
+
+
+class CsvExportTests(TestCase):
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        Lead.objects.create(first_name="Aoife", last_name="Murphy", email="aoife@example.ie",
+                            company="Celtic Retail")
+        Lead.objects.create(first_name="James", last_name="Kelly", email="james@example.com",
+                            company="Heritage Outfitters")
+
+    def test_export_returns_csv_with_a_header_and_every_row(self):
+        response = self.client.get("/leads/?export=csv")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+        lines = response.content.decode().strip().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn("email", lines[0].lower())
+        self.assertIn("aoife@example.ie", response.content.decode())
+
+    def test_export_honours_the_active_search(self):
+        response = self.client.get("/leads/?q=Celtic&export=csv")
+        body = response.content.decode()
+        self.assertIn("aoife@example.ie", body)
+        self.assertNotIn("james@example.com", body)
+
+    def test_export_is_audited(self):
+        self.client.get("/leads/?export=csv")
+        self.assertTrue(AuditLog.objects.filter(event="lead.exported").exists())
+
+    def test_secret_settings_are_masked_in_export(self):
+        Setting.objects.create(group="smtp", key="api_key", value="SUPER-SECRET-VALUE", is_secret=True)
+        body = self.client.get("/settings/?export=csv").content.decode()
+        self.assertNotIn("SUPER-SECRET-VALUE", body)
+        self.assertIn("<hidden>", body)
+
+
+class CsvImportTests(TestCase):
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+
+    def _upload(self, text, dry_run=False):
+        payload = {"action": "import", "file": SimpleUploadedFile("leads.csv", text.encode("utf-8"),
+                                                                  content_type="text/csv")}
+        if dry_run:
+            payload["dry_run"] = "on"
+        return self.client.post("/leads/", payload)
+
+    def test_dry_run_writes_nothing(self):
+        self._upload("first_name,last_name,email\nNiamh,Byrne,niamh@example.ie\n", dry_run=True)
+        self.assertEqual(Lead.objects.count(), 0)
+
+    def test_import_creates_leads(self):
+        self._upload("first_name,last_name,email,company\nNiamh,Byrne,niamh@example.ie,Byrne Ltd\n")
+        lead = Lead.objects.get(email="niamh@example.ie")
+        self.assertEqual(lead.first_name, "Niamh")
+        self.assertEqual(lead.company, "Byrne Ltd")
+        self.assertTrue(AuditLog.objects.filter(event="leads.imported").exists())
+
+    def test_existing_leads_are_updated_by_email_not_duplicated(self):
+        Lead.objects.create(first_name="Old", last_name="Name", email="niamh@example.ie")
+        self._upload("first_name,last_name,email\nNiamh,Byrne,NIAMH@example.ie\n")
+        self.assertEqual(Lead.objects.filter(email__iexact="niamh@example.ie").count(), 1)
+        self.assertEqual(Lead.objects.get(email__iexact="niamh@example.ie").first_name, "Niamh")
+
+    def test_rows_without_a_name_are_reported_not_imported(self):
+        self._upload("first_name,last_name,email\n,,nameless@example.ie\n")
+        self.assertFalse(Lead.objects.filter(email="nameless@example.ie").exists())
+
+    def test_a_bad_score_does_not_import_the_row(self):
+        self._upload("first_name,last_name,email,score\nA,B,bad@example.ie,not-a-number\n")
+        self.assertFalse(Lead.objects.filter(email="bad@example.ie").exists())
+
+    def test_a_file_without_an_email_column_is_rejected(self):
+        self._upload("name,phone\nSomebody,0871234567\n")
+        self.assertEqual(Lead.objects.count(), 0)
+
+    def test_import_is_only_offered_on_leads(self):
+        self.assertTrue(self.client.get("/leads/").context["can_import"])
+        self.assertFalse(self.client.get("/campaigns/").context["can_import"])

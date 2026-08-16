@@ -10,6 +10,8 @@ TRIGGER_EVENTS=[
     ("campaign.sent","Email campaign finished sending"),
     ("delivery.failed","Message delivery failed"),
     ("attention.overdue","Attention item passed its deadline"),
+    ("lead.dormant","Lead has gone quiet"),
+    ("lead.bounced","Lead was unsubscribed after repeated bounces"),
 ]
 
 class Timestamped(models.Model):

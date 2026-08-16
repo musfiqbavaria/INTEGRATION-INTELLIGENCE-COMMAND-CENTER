@@ -1,4 +1,4 @@
-import hashlib, hmac, json, secrets
+import csv, hashlib, hmac, io, json, secrets
 from decimal import Decimal
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
@@ -15,6 +15,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
 from .models import *
+from django.utils.dateparse import parse_datetime
+from .segments import resolve as resolve_segment, describe as describe_segment, consented_leads
 from .services import test_integration, run_ai_engine, send_whatsapp_template
 from .tasks import send_campaign, execute_workflow
 
@@ -27,6 +29,106 @@ READONLY_SLUGS={"audit","analytics"}
 # Health-check slug -> the Integration.category it belongs to.
 SERVICE_CATEGORY={"database":"Database","smtp":"Email","whatsapp":"WhatsApp","openai":"AI"}
 PAGE_SIZE=25
+# Shown beside the segment field so the syntax is discoverable.
+SEGMENT_HELP=["all","wholesale","retail","status:qualified","market:Ireland","source:Website","score>=70"]
+
+LEAD_IMPORT_FIELDS = ["first_name", "last_name", "email", "phone", "company",
+                      "market", "source", "status", "score", "consent_at"]
+
+
+def _export_csv(queryset, display_fields, slug):
+    """Stream the current selection as CSV, honouring any active search."""
+    response = HttpResponse(content_type="text/csv")
+    stamp = timezone.localtime().strftime("%Y%m%d-%H%M")
+    response["Content-Disposition"] = f'attachment; filename="{slug}-{stamp}.csv"'
+    writer = csv.writer(response)
+    writer.writerow(["id"] + [f.verbose_name for f in display_fields])
+    for obj in queryset.iterator():
+        row = [obj.pk]
+        for field in display_fields:
+            # Secrets are masked in the table; they must not leak through export.
+            if field.name == "value" and getattr(obj, "is_secret", False):
+                row.append("<hidden>")
+                continue
+            value = getattr(obj, field.name, None)
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(str(v) for v in value)
+            elif isinstance(value, dict):
+                value = json.dumps(value)
+            row.append("" if value is None else str(value))
+        writer.writerow(row)
+    return response
+
+
+def _import_leads(upload, dry_run, user):
+    """Validate a CSV of leads, then create or update by email.
+
+    Every row is checked before anything is written, and `dry_run` reports what
+    would happen without touching the database.
+    """
+    report = {"created": 0, "updated": 0, "skipped": 0, "errors": [], "dry_run": dry_run}
+    try:
+        text = upload.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        report["errors"].append("The file is not UTF-8 text. Re-save it as CSV UTF-8.")
+        return report
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or "email" not in [f.strip().lower() for f in reader.fieldnames]:
+        report["errors"].append("The file needs an 'email' column. Found: "
+                                + ", ".join(reader.fieldnames or ["nothing"]))
+        return report
+
+    pending = []
+    for number, raw in enumerate(reader, start=2):
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        email = row.get("email", "")
+        if not email:
+            report["skipped"] += 1
+            continue
+        data = {f: row.get(f, "") for f in LEAD_IMPORT_FIELDS if f in row}
+        data["email"] = email
+        if not data.get("first_name") and not data.get("last_name"):
+            report["errors"].append(f"Row {number}: {email} has no name")
+            continue
+        if data.get("score"):
+            if not str(data["score"]).isdigit():
+                report["errors"].append(f"Row {number}: score '{data['score']}' is not a number")
+                continue
+            data["score"] = int(data["score"])
+        else:
+            data.pop("score", None)
+        consent = data.pop("consent_at", "")
+        if consent:
+            parsed = parse_datetime(consent)
+            if parsed is None:
+                report["errors"].append(f"Row {number}: consent_at '{consent}' is not a date")
+                continue
+            data["consent_at"] = timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+        pending.append((number, email, data))
+
+    for number, email, data in pending:
+        existing = Lead.objects.filter(email__iexact=email).first()
+        if existing:
+            report["updated"] += 1
+            if not dry_run:
+                for key, value in data.items():
+                    setattr(existing, key, value)
+                try: existing.full_clean(); existing.save()
+                except Exception as exc: report["errors"].append(f"Row {number}: {exc}")
+        else:
+            report["created"] += 1
+            if not dry_run:
+                lead = Lead(**data)
+                try: lead.full_clean(); lead.save()
+                except Exception as exc: report["errors"].append(f"Row {number}: {exc}")
+
+    if not dry_run:
+        AuditLog.objects.create(user=user, event="leads.imported", new_values={
+            "created": report["created"], "updated": report["updated"],
+            "skipped": report["skipped"], "errors": len(report["errors"]),
+        })
+    return report
 
 def _back(request,slug):
     """Redirect to this module, preserving any active search and page."""
@@ -249,6 +351,21 @@ def module(request,slug):
         if readonly:
             messages.error(request,"This record set is read-only.")
             return _back(request,slug)
+        if action=="import" and slug=="leads":
+            upload=request.FILES.get("file")
+            if upload is None:
+                messages.error(request,"Choose a CSV file to import")
+            else:
+                report=_import_leads(upload,bool(request.POST.get("dry_run")),request.user)
+                summary=(f"{report['created']} to create, {report['updated']} to update, "
+                         f"{report['skipped']} skipped") if report["dry_run"] else (
+                         f"{report['created']} created, {report['updated']} updated, "
+                         f"{report['skipped']} skipped")
+                if report["errors"]:
+                    messages.error(request,f"{summary}. Problems: "+"; ".join(report["errors"][:5]))
+                else:
+                    messages.success(request,("Dry run — nothing saved. " if report["dry_run"] else "")+summary)
+            return _back(request,slug)
         if action=="delete":
             if slug=="users":
                 target=User.objects.filter(pk=request.POST.get("id")).first()
@@ -348,6 +465,12 @@ def module(request,slug):
                 condition|=Q(**{f"{field.name}__icontains":query})
         queryset=queryset.filter(condition) if condition else queryset.none()
 
+    display_fields_for_export=[f for f in model._meta.fields if f.name not in DISPLAY_SKIP]
+    if request.GET.get("export")=="csv":
+        AuditLog.objects.create(user=request.user,event=f"{model._meta.model_name}.exported",
+                                new_values={"rows":queryset.count(),"search":query})
+        return _export_csv(queryset,display_fields_for_export,slug)
+
     paginator=Paginator(queryset,PAGE_SIZE)
     page_obj=paginator.get_page(request.GET.get("page"))
     items=page_obj.object_list
@@ -392,7 +515,7 @@ def module(request,slug):
     total=model.objects.count()
     context={"title":TITLES.get(slug,slug.title()),"slug":slug,"rows":rows,"columns":[f.verbose_name for f in display_fields],
              "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows),
-             "query":query,"page_obj":page_obj,"match_count":paginator.count,
+             "query":query,"page_obj":page_obj,"match_count":paginator.count,"can_import":slug=="leads",
              "form_fields":form_fields,"editing":editing,"can_unsubscribe":slug=="leads"}
     if readonly:
         agg=FinancialRecord.objects.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
@@ -411,11 +534,39 @@ def email_center(request):
             messages.success(request,"Email campaign saved as draft")
         elif action=="send":
             campaign=get_object_or_404(EmailCampaign,pk=request.POST.get("id"))
-            if not Lead.objects.exclude(consent_at=None).exclude(status="unsubscribed").exists(): messages.error(request,"No consented recipients are available")
-            else: send_campaign.delay(campaign.id); messages.success(request,"Campaign queued for authenticated SMTP delivery")
+            audience,description,unknown=resolve_segment(campaign.segment)
+            if unknown:
+                messages.error(request,f"Segment not understood: {', '.join(unknown)}. Nothing was sent.")
+            elif not audience.exists():
+                messages.error(request,f"No recipients match this segment ({description})")
+            else:
+                send_campaign.delay(campaign.id)
+                messages.success(request,f"Queued for {audience.count()} recipient(s) — {description}")
+        elif action=="schedule":
+            campaign=get_object_or_404(EmailCampaign,pk=request.POST.get("id"))
+            when=parse_datetime(request.POST.get("scheduled_at") or "")
+            if when is None:
+                messages.error(request,"Use the format YYYY-MM-DD HH:MM for the send time")
+            else:
+                if timezone.is_naive(when): when=timezone.make_aware(when)
+                if when<=timezone.now(): messages.error(request,"Pick a time in the future")
+                else:
+                    EmailCampaign.objects.filter(pk=campaign.pk).update(scheduled_at=when,status="scheduled")
+                    messages.success(request,f"Scheduled for {timezone.localtime(when):%d %b %Y at %H:%M}")
+        elif action=="unschedule":
+            EmailCampaign.objects.filter(pk=request.POST.get("id"),status="scheduled").update(status="draft",scheduled_at=None)
+            messages.success(request,"Schedule cancelled")
         elif action=="delete": EmailCampaign.objects.filter(pk=request.POST.get("id"),status="draft").delete()
         return redirect("email-center")
-    return render(request,"email_center.html",{"campaigns":EmailCampaign.objects.order_by("-created_at"),"deliveries":MessageDelivery.objects.filter(channel="email").order_by("-created_at")[:25],"consented":Lead.objects.exclude(consent_at=None).exclude(status="unsubscribed").count()})
+    campaigns=list(EmailCampaign.objects.order_by("-created_at"))
+    for campaign in campaigns:
+        campaign.audience=describe_segment(campaign.segment)
+    return render(request,"email_center.html",{
+        "campaigns":campaigns,
+        "deliveries":MessageDelivery.objects.filter(channel="email").order_by("-created_at")[:25],
+        "consented":consented_leads().count(),
+        "segment_help":SEGMENT_HELP,
+    })
 
 @login_required
 def whatsapp_center(request):
@@ -554,3 +705,87 @@ def unsubscribe(request):
     AuditLog.objects.create(event="consent.unsubscribe",new_values={"email":email.lower(),"leads_updated":matched})
     return JsonResponse({"status":"unsubscribed","leads_updated":matched})
 def health(request): return JsonResponse({"status":"ok","service":"Emerald Rozalia Marketing Centre","runtime":"Python 3.14.3"})
+
+
+# --- Public AEO surface -----------------------------------------------------
+# Deliberately unauthenticated. The AEO module exists to be read by search
+# engines and AI assistants; until now approved answers never left the admin.
+
+ORGANISATION = {
+    "@type": "Organization",
+    "name": "Emerald Rozalia Limited",
+    "url": "https://emeraldrozalia.ie",
+    "telephone": "+353 89 978 8187",
+    "address": {"@type": "PostalAddress", "addressLocality": "Limerick", "addressCountry": "IE"},
+}
+
+
+def _published_answers():
+    return AeoEntry.objects.filter(status="published").order_by("-published_at", "-created_at")
+
+
+def _faq_json(entries, request):
+    """schema.org FAQPage — the structure assistants and crawlers actually parse."""
+    return json.dumps({
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "publisher": ORGANISATION,
+        "inLanguage": entries[0].language if entries else "en-IE",
+        "mainEntity": [{
+            "@type": "Question",
+            "name": entry.question,
+            "url": request.build_absolute_uri(reverse("public-answer", args=[entry.pk])),
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": entry.answer,
+                **({"citation": list(entry.citations)} if entry.citations else {}),
+            },
+        } for entry in entries],
+    }, ensure_ascii=False, indent=2)
+
+
+def public_answers(request):
+    entries = list(_published_answers())
+    topics = sorted({e.topic for e in entries if e.topic})
+    return render(request, "public/answers.html", {
+        "entries": entries, "topics": topics,
+        "json_ld": _faq_json(entries, request),
+        "title": "Answers — Emerald Rozalia Limited",
+    })
+
+
+def public_answer(request, pk):
+    entry = get_object_or_404(AeoEntry, pk=pk, status="published")
+    return render(request, "public/answer.html", {
+        "entry": entry,
+        "json_ld": _faq_json([entry], request),
+        "title": f"{entry.question} — Emerald Rozalia Limited",
+    })
+
+
+def sitemap(request):
+    urls = [{"loc": request.build_absolute_uri(reverse("public-answers")),
+             "lastmod": None, "priority": "0.8"}]
+    for entry in _published_answers():
+        urls.append({
+            "loc": request.build_absolute_uri(reverse("public-answer", args=[entry.pk])),
+            "lastmod": (entry.published_at or entry.updated_at).date().isoformat(),
+            "priority": "0.6",
+        })
+    return render(request, "public/sitemap.xml", {"urls": urls}, content_type="application/xml")
+
+
+def robots(request):
+    sitemap_url = request.build_absolute_uri(reverse("sitemap"))
+    body = (
+        "User-agent: *\n"
+        "Allow: /answers/\n"
+        "Disallow: /login/\n"
+        "Disallow: /api/\n"
+        "Disallow: /leads/\n"
+        "Disallow: /settings/\n"
+        "Disallow: /users/\n"
+        "Disallow: /audit/\n"
+        f"\nSitemap: {sitemap_url}\n"
+    )
+    return HttpResponse(body, content_type="text/plain")

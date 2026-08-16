@@ -1,0 +1,32 @@
+{% load static %}<!doctype html>
+<html lang="en-IE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>{{ title|default:"Emerald Rozalia Limited" }}</title>
+<meta name="description" content="{% block description %}Answers about Emerald Rozalia Limited — Irish-made hats and caps, wholesale and retail, from Limerick, Ireland.{% endblock %}">
+<link rel="canonical" href="{{ request.build_absolute_uri }}">
+<link rel="stylesheet" href="{% static 'css/public.css' %}">
+{% block head %}{% endblock %}
+{# schema.org data block. Not executable, so the script-src policy does not apply. #}
+<script type="application/ld+json">{{ json_ld|safe }}</script>
+</head>
+<body>
+
+<header class="site-head">
+  <a class="brand" href="{% url 'public-answers' %}">
+    <img src="{% static 'images/emerald-rozalia-limited-logo.png' %}" alt="Emerald Rozalia Limited" width="180" height="50">
+  </a>
+  <p>Irish-made hats &amp; caps · Limerick, Ireland</p>
+</header>
+
+<main>{% block content %}{% endblock %}</main>
+
+<footer class="site-foot">
+  <p><b>Emerald Rozalia Limited</b> · Limerick, Ireland · <a href="tel:+353899788187">089 978 8187</a></p>
+  <p class="muted">These answers are reviewed and approved before publication.</p>
+</footer>
+
+</body>
+</html>

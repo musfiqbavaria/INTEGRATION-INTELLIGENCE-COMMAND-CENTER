@@ -1682,3 +1682,25 @@ footer a:hover { color: var(--green); }
 .stack-form .form-row .primary { flex: 1; }
 .stack-form .form-row .action { padding: 10px var(--s4); text-decoration: none; }
 .stack-form code { font-family: var(--font-data); color: var(--green); }
+
+/* Campaign row controls -------------------------------------------------- */
+.row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row-actions input[name="scheduled_at"] {
+  width: 150px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: 400 var(--t-xs)/1.4 var(--font-data);
+}
+.warn { color: var(--yellow); }
+
+/* CSV toolbar ------------------------------------------------------------ */
+.toolbar.import { flex-wrap: wrap; padding-top: 0; }
+.toolbar.import input[type="file"] { color: var(--muted); font-size: var(--t-xs); max-width: 260px; }
+.toolbar .inline { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--muted); }
+.toolbar .inline input { width: 14px; height: 14px; accent-color: var(--green); }
+.toolbar .hint { font-size: var(--t-xs); color: #7d8d97; }
+.toolbar code { font-family: var(--font-data); color: var(--green); }
+.toolbar a.action { display: inline-flex; align-items: center; gap: 5px; }

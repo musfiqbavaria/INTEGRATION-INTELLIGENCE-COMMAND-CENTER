@@ -1,0 +1,16 @@
+{% extends "public/base.html" %}
+{% block description %}{{ entry.answer|striptags|truncatewords:30 }}{% endblock %}
+{% block content %}
+<section class="answers single">
+  <article>
+    <h1>{{ entry.question }}</h1>
+    <p>{{ entry.answer|linebreaksbr }}</p>
+    <p class="meta">{{ entry.topic }} · {{ entry.market }} · {{ entry.language }}{% if entry.published_at %} · updated {{ entry.published_at|date:"j M Y" }}{% endif %}</p>
+    {% if entry.citations %}
+    <h3>Sources</h3>
+    <ul class="cites">{% for citation in entry.citations %}<li><a href="{{ citation }}" rel="nofollow noopener">{{ citation }}</a></li>{% endfor %}</ul>
+    {% endif %}
+    <p><a class="back" href="{% url 'public-answers' %}">← All answers</a></p>
+  </article>
+</section>
+{% endblock %}

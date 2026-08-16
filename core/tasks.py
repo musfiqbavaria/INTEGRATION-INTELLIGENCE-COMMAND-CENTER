@@ -9,14 +9,16 @@ import re
 
 from celery import shared_task
 from django.core.mail import EmailMultiAlternatives
+from django.db.models import Count
 from django.utils import timezone
 from django.utils.html import strip_tags
 
 from django.conf import settings
 from django.template.loader import render_to_string
 
+from .segments import resolve as resolve_segment
 from .models import (
-    AiDecision, AttentionItem, Automation, AuditLog, EmailCampaign, Integration,
+    AiDecision, AttentionItem, ConsentEvent, Automation, AuditLog, EmailCampaign, Integration,
     IntegrationCheck, Lead, MessageDelivery, WhatsAppTemplate, WorkflowRun,
 )
 
@@ -109,10 +111,24 @@ ACTION_HANDLERS = [
 WAIT_PATTERN = re.compile(r"^\s*wait\b", re.I)
 
 
+WAIT_AMOUNT = re.compile(r"wait\s+(\d+)\s*(minute|min|hour|hr|day)", re.I)
+UNIT_SECONDS = {"minute": 60, "min": 60, "hour": 3600, "hr": 3600, "day": 86400}
+
+
+def parse_wait(action):
+    """Seconds a Wait step should pause for, or None when it is not a wait."""
+    if not WAIT_PATTERN.match(action):
+        return None
+    match = WAIT_AMOUNT.search(action)
+    if not match:
+        return 3600  # "Wait" with no figure means an hour
+    return int(match.group(1)) * UNIT_SECONDS[match.group(2).lower()]
+
+
 def _run_action(automation, lead, action, context):
     """Return (status, detail) for a single action string."""
     if WAIT_PATTERN.match(action):
-        return "skipped", "delay steps are not executed inline"
+        return "skipped", "handled as a scheduled delay"
     for pattern, handler in ACTION_HANDLERS:
         if pattern.search(action):
             try:
@@ -136,8 +152,13 @@ def _conditions_pass(automation, lead):
 
 
 @shared_task
-def execute_workflow(automation_id, payload=None):
-    """Run one workflow. Records what actually happened per action."""
+def execute_workflow(automation_id, payload=None, start_index=0):
+    """Run one workflow from `start_index`.
+
+    A Wait step does not block a worker: the actions completed so far are
+    recorded, the run is marked `waiting`, and the remainder is queued with a
+    countdown. That is what turns a workflow into a multi-step drip sequence.
+    """
     automation = Automation.objects.get(pk=automation_id)
     payload = payload or {}
     if int(payload.get("depth", 0)) > 2:
@@ -161,11 +182,33 @@ def execute_workflow(automation_id, payload=None):
             automation.save(update_fields=["runs", "last_run_at", "updated_at"])
             return run.id
 
-        for action in automation.actions or []:
+        steps = list(automation.actions or [])
+        waited = False
+        for index in range(start_index, len(steps)):
+            action = steps[index]
+            seconds = parse_wait(action)
+            if seconds is not None and index + 1 < len(steps):
+                results.append({"action": action, "status": "waiting",
+                                "detail": f"resuming in {seconds // 60} min"})
+                execute_workflow.apply_async(
+                    (automation_id, payload, index + 1), countdown=seconds)
+                waited = True
+                break
+            if seconds is not None:
+                results.append({"action": action, "status": "skipped",
+                                "detail": "nothing follows this wait"})
+                continue
             status, detail = _run_action(automation, lead, action, payload)
             results.append({"action": action, "status": status, "detail": detail})
 
         run.actions_completed = results
+        if waited:
+            run.status = "waiting"
+            run.finished_at = timezone.now()
+            run.save()
+            automation.last_run_at = timezone.now()
+            automation.save(update_fields=["last_run_at", "updated_at"])
+            return run.id
         failed = [r for r in results if r["status"] == "failed"]
         run.status = "failed" if failed else "completed"
         if failed:
@@ -225,10 +268,9 @@ def send_campaign(campaign_id):
         .filter(channel="email", status="sent", metadata__campaign_id=campaign.id)
         .values_list("recipient", flat=True)
     )
-    recipients = list(
-        Lead.objects.exclude(consent_at=None).exclude(status="unsubscribed")
-        .values_list("email", flat=True)
-    )
+    # The segment finally selects the audience instead of being decorative.
+    audience, description, unknown = resolve_segment(campaign.segment)
+    recipients = list(audience.values_list("email", flat=True))
 
     sent = failures = skipped = 0
     for address in recipients:
@@ -258,9 +300,10 @@ def send_campaign(campaign_id):
     campaign.save()
     AuditLog.objects.create(
         event="email_campaign.delivery_completed",
-        new_values={"id": campaign_id, "sent": sent, "failures": failures, "skipped": skipped},
+        new_values={"id": campaign_id, "sent": sent, "failures": failures, "skipped": skipped,
+                    "segment": campaign.segment, "audience": description},
     )
-    return {"sent": sent, "failures": failures, "skipped": skipped}
+    return {"sent": sent, "failures": failures, "skipped": skipped, "audience": description}
 
 
 @shared_task
@@ -323,3 +366,104 @@ def send_owner_digest(window_hours=24):
         "overdue": len(digest["overdue"]), "open": digest["open_count"],
     })
     return {"sent_to": recipient, "critical": len(digest["critical"]), "overdue": len(digest["overdue"])}
+
+
+@shared_task
+def send_scheduled_campaigns():
+    """Queue campaigns whose scheduled time has arrived.
+
+    `EmailCampaign.scheduled_at` existed from the start and nothing ever read it,
+    so a scheduled campaign simply never sent.
+    """
+    now = timezone.now()
+    due = EmailCampaign.objects.filter(status="scheduled", scheduled_at__lte=now)
+    queued = list(due.values_list("pk", flat=True))
+    for campaign_id in queued:
+        EmailCampaign.objects.filter(pk=campaign_id).update(status="queued")
+        send_campaign.delay(campaign_id)
+    return {"queued": len(queued), "ids": queued}
+
+
+@shared_task
+def process_bounces():
+    """Unsubscribe addresses that keep hard-failing.
+
+    Continuing to mail an address that bounces damages sender reputation, which
+    pushes legitimate campaigns into spam folders for everyone else.
+    """
+    from django.conf import settings as conf
+    from .signals import fire
+    limit = getattr(conf, "BOUNCE_LIMIT", 3)
+    counts = (MessageDelivery.objects.filter(channel="email", status="failed")
+              .values("recipient").annotate(n=Count("id")).filter(n__gte=limit))
+    unsubscribed = []
+    for row in counts:
+        lead = (Lead.objects.filter(email__iexact=row["recipient"])
+                .exclude(status="unsubscribed").first())
+        if lead is None:
+            continue
+        Lead.objects.filter(pk=lead.pk).update(consent_at=None, status="unsubscribed")
+        ConsentEvent.objects.create(email=lead.email.lower(), action="unsubscribe",
+                                    source=f"bounce limit ({row['n']} failures)")
+        AttentionItem.objects.create(
+            severity="medium", category="Deliverability",
+            title=f"{lead.email} unsubscribed after {row['n']} bounces",
+            confidence=100, source="Deliverability Monitor",
+            recommendation="Address repeatedly rejected mail. Remove it from any external list too.")
+        fire("lead.bounced", {"lead_id": lead.pk, "email": lead.email, "failures": row["n"]})
+        unsubscribed.append(lead.email)
+    if unsubscribed:
+        AuditLog.objects.create(event="deliverability.auto_unsubscribed",
+                                new_values={"emails": unsubscribed, "limit": limit})
+    return {"unsubscribed": len(unsubscribed), "limit": limit}
+
+
+@shared_task
+def expire_stale_consent():
+    """Lapse consent that has gone stale, and tell the owner.
+
+    Consent gathered years ago is hard to defend under GDPR. These leads stop
+    receiving campaigns until they opt in again.
+    """
+    from django.conf import settings as conf
+    months = getattr(conf, "CONSENT_EXPIRY_MONTHS", 24)
+    cutoff = timezone.now() - timezone.timedelta(days=months * 30)
+    stale = list(Lead.objects.exclude(consent_at=None)
+                 .exclude(status="unsubscribed").filter(consent_at__lt=cutoff))
+    for lead in stale:
+        Lead.objects.filter(pk=lead.pk).update(consent_at=None, status="consent-expired")
+        ConsentEvent.objects.create(email=lead.email.lower(), action="expired",
+                                    source=f"older than {months} months")
+    if stale:
+        AttentionItem.objects.create(
+            severity="high", category="Governance / Ethical Alert",
+            title=f"{len(stale)} lead consent record(s) expired",
+            confidence=100, source="Compliance Engine",
+            recommendation=f"Consent older than {months} months has lapsed. Re-confirm before mailing these contacts again.")
+        AuditLog.objects.create(event="consent.expired",
+                                new_values={"count": len(stale), "months": months,
+                                            "emails": [l.email for l in stale][:50]})
+    return {"expired": len(stale), "months": months}
+
+
+@shared_task
+def flag_dormant_leads():
+    """Raise `lead.dormant` for contacts who have gone quiet, so a win-back can run."""
+    from django.conf import settings as conf
+    from .signals import fire
+    months = getattr(conf, "DORMANT_MONTHS", 6)
+    cutoff = timezone.now() - timezone.timedelta(days=months * 30)
+    active_recipients = set(
+        MessageDelivery.objects.filter(created_at__gte=cutoff).values_list("recipient", flat=True))
+    dormant = [lead for lead in Lead.objects.exclude(consent_at=None).exclude(status="unsubscribed")
+               .filter(updated_at__lt=cutoff)
+               if lead.email not in active_recipients]
+    for lead in dormant:
+        fire("lead.dormant", {"lead_id": lead.pk, "email": lead.email})
+    if dormant:
+        AttentionItem.objects.create(
+            severity="low", category="High-Impact Opportunity",
+            title=f"{len(dormant)} lead(s) have gone quiet",
+            confidence=80, source="Engagement Monitor",
+            recommendation=f"No contact in {months} months. Consider a win-back campaign or archive them.")
+    return {"dormant": len(dormant), "months": months}

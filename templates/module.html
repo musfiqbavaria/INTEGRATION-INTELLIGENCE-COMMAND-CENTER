@@ -32,7 +32,19 @@
         </span>
         <button class="action" type="submit">Search</button>
         {% if query %}<a class="action" href="{% url 'module' slug %}">Clear</a>{% endif %}
+        <a class="action" href="?{% if query %}q={{ query|urlencode }}&amp;{% endif %}export=csv"
+           title="Download the current selection"><svg class="ico"><use href="#i-inbox"/></svg>Export CSV</a>
       </form>
+
+      {% if can_import %}
+      <form class="toolbar import" method="post" enctype="multipart/form-data">{% csrf_token %}
+        <input type="hidden" name="action" value="import">
+        <input type="file" name="file" accept=".csv,text/csv" aria-label="Lead CSV file">
+        <label class="inline"><input type="checkbox" name="dry_run" checked> Validate only</label>
+        <button class="action" type="submit">Import CSV</button>
+        <span class="hint">Needs an <code>email</code> column. Existing leads are matched by email and updated.</span>
+      </form>
+      {% endif %}
 
       <form method="post" id="bulk">{% csrf_token %}
       {% if not readonly and rows %}

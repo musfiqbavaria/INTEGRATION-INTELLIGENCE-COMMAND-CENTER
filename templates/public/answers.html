@@ -1,0 +1,26 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="intro">
+  <h1>Answers</h1>
+  <p>Questions we are asked most often about Emerald Rozalia Limited, our products and how we work.</p>
+  {% if topics %}<p class="topics">{% for topic in topics %}<span>{{ topic }}</span>{% endfor %}</p>{% endif %}
+</section>
+
+<section class="answers">
+  {% for entry in entries %}
+  <article id="q{{ entry.pk }}">
+    <h2><a href="{% url 'public-answer' entry.pk %}">{{ entry.question }}</a></h2>
+    <p>{{ entry.answer|linebreaksbr }}</p>
+    <p class="meta">{{ entry.topic }} · {{ entry.market }}{% if entry.published_at %} · updated {{ entry.published_at|date:"j M Y" }}{% endif %}</p>
+    {% if entry.citations %}
+    <ul class="cites">{% for citation in entry.citations %}<li><a href="{{ citation }}" rel="nofollow noopener">{{ citation }}</a></li>{% endfor %}</ul>
+    {% endif %}
+  </article>
+  {% empty %}
+  <article class="empty">
+    <h2>No answers published yet</h2>
+    <p>Approved answers appear here once the owner publishes them.</p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

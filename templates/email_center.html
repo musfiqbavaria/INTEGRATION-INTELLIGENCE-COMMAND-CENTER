@@ -28,16 +28,25 @@
                 {% if c.preview_text %}<span class="row-sub">{{ c.preview_text }}</span>{% endif %}
               </td>
               <td class="status"><span class="badge {{ c.status }}">{{ c.status|title }}</span></td>
-              <td>{{ c.segment }}<span class="row-sub">{{ c.recipients }} recipients</span></td>
+              <td>{{ c.segment }}
+                <span class="row-sub">{% if c.audience.unknown %}<b class="warn">unrecognised: {{ c.audience.unknown|join:", " }}</b>{% else %}{{ c.audience.count }} match{{ c.audience.count|pluralize:",es" }} — {{ c.audience.description }}{% endif %}</span>
+                {% if c.scheduled_at %}<span class="row-sub">scheduled {{ c.scheduled_at|date:"j M H:i" }}</span>{% endif %}</td>
               <td class="num">{{ c.opens }} opens · {{ c.clicks }} clicks<span class="row-sub">{{ c.failures }} failed</span></td>
               <td class="actions">
                 {% if c.status == 'draft' or c.status == 'failed' %}
-                <form method="post">{% csrf_token %}
+                <form method="post" class="row-actions">{% csrf_token %}
                   <input type="hidden" name="id" value="{{ c.id }}">
                   <button class="primary" name="action" value="send"
-                          data-confirm="Send &quot;{{ c.name }}&quot; to {{ consented }} consented recipients? Delivery cannot be recalled.">Send through SMTP</button>
+                          data-confirm="Send &quot;{{ c.name }}&quot; to {{ c.audience.count }} recipient(s)? Delivery cannot be recalled.">Send now</button>
+                  <input name="scheduled_at" placeholder="YYYY-MM-DD HH:MM" aria-label="Send time">
+                  <button class="action" name="action" value="schedule">Schedule</button>
                   <button class="action critical" name="action" value="delete"
                           data-confirm="Delete the draft &quot;{{ c.name }}&quot;? This cannot be undone.">Delete draft</button>
+                </form>
+                {% elif c.status == 'scheduled' %}
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="id" value="{{ c.id }}">
+                  <button class="action" name="action" value="unschedule">Cancel schedule</button>
                 </form>
                 {% else %}—{% endif %}
               </td>
@@ -77,7 +86,9 @@
         <label><span>Subject<span class="req" title="Required">*</span></span><input name="subject" required></label>
         <label><span>Preview text</span><input name="preview_text"><span class="hint">Shown after the subject in most inboxes.</span></label>
         <label><span>HTML content<span class="req" title="Required">*</span></span><textarea name="content" rows="10" required></textarea></label>
-        <label><span>Segment</span><input name="segment" value="Consented leads"></label>
+        <label><span>Segment</span><input name="segment" value="all">
+          <span class="hint">Comma separated, all must match: {{ segment_help|join:" · " }}</span>
+        </label>
         <button class="primary">Save draft</button>
       </form>
       <div class="notice">Delivery metrics are system-generated and cannot be edited by hand.</div>
