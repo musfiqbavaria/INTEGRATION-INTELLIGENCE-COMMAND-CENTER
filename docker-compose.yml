@@ -26,13 +26,22 @@ services:
     restart: unless-stopped
     env_file: .env
     environment: {POSTGRES_DB: "${POSTGRES_DB}", POSTGRES_USER: "${POSTGRES_USER}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"}
-    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    # postgres:18+ stores data in a major-version subdirectory and expects the
+    # volume at /var/lib/postgresql, not /var/lib/postgresql/data. Mounting the
+    # old path makes the image abort with "there appears to be PostgreSQL data
+    # in /var/lib/postgresql/data (unused mount/volume)".
+    volumes: ["postgres_data:/var/lib/postgresql"]
     healthcheck: {test: ["CMD-SHELL","pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"], interval: 10s, timeout: 5s, retries: 10}
   redis:
     image: redis:8.2-alpine
     restart: unless-stopped
     command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
+    # The healthcheck expands $REDIS_PASSWORD inside the container, so the
+    # variable has to exist there. Without this the check authenticates with an
+    # empty password, never reports healthy, and app/worker wait forever on
+    # depends_on: service_healthy.
+    environment: {REDIS_PASSWORD: "${REDIS_PASSWORD}"}
     volumes: ["redis_data:/data"]
-    healthcheck: {test: ["CMD-SHELL","redis-cli -a $$REDIS_PASSWORD ping | grep PONG"], interval: 10s, timeout: 5s, retries: 10}
+    healthcheck: {test: ["CMD-SHELL","redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"], interval: 10s, timeout: 5s, retries: 10}
 volumes: {postgres_data: {}, redis_data: {}, media: {}}
 
