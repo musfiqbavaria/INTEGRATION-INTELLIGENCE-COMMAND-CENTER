@@ -21,7 +21,7 @@
             <tr>
               <td><span class="row-title">{{ a.name }}</span><span class="row-sub"><span class="badge {{ a.status }}">{{ a.status|title }}</span></span></td>
               <td class="text">
-                <span class="row-sub"><b>WHEN</b> {{ a.trigger }}</span>
+                <span class="row-sub"><b>WHEN</b> {% if a.trigger_event %}{{ a.get_trigger_event_display }}{% else %}every {{ a.run_every_minutes }} min{% endif %}</span><span class="row-sub">{{ a.trigger }}</span>
                 <span class="row-sub"><b>IF</b> {{ a.conditions|join:', '|default:'—' }}</span>
                 <span class="row-sub"><b>THEN</b> {{ a.actions|join:', '|default:'—' }}</span>
               </td>
@@ -70,7 +70,14 @@
       <form method="post" class="stack-form">{% csrf_token %}
         <input type="hidden" name="action" value="create">
         <label><span>Name<span class="req" title="Required">*</span></span><input name="name" required></label>
-        <label><span>Trigger<span class="req" title="Required">*</span></span><input name="trigger" required><span class="hint">The event that starts this workflow.</span></label>
+        <label><span>Trigger description<span class="req" title="Required">*</span></span><input name="trigger" required><span class="hint">Plain-language note for you.</span></label>
+        <label><span>Fires on</span>
+          <select name="trigger_event">
+            {% for value,label in trigger_events %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
+          <span class="hint">Pick an event to run the moment it happens, or leave on schedule.</span>
+        </label>
+        <label><span>Run every (minutes)</span><input name="run_every_minutes" value="60" inputmode="numeric"><span class="hint">Only used when the trigger is “Schedule only”.</span></label>
         <label><span>Conditions</span><textarea name="conditions" rows="3"></textarea><span class="hint">One condition per line. All must pass.</span></label>
         <label><span>Actions<span class="req" title="Required">*</span></span><textarea name="actions" rows="4" required></textarea><span class="hint">One action per line, run in order.</span></label>
         <button class="primary">Save paused workflow</button>

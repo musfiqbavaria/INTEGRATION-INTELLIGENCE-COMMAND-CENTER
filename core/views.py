@@ -438,11 +438,18 @@ def whatsapp_center(request):
 def automation_center(request):
     if request.method=="POST":
         action=request.POST.get("action")
-        if action=="create": Automation.objects.create(name=request.POST["name"],trigger=request.POST["trigger"],conditions=[x.strip() for x in request.POST.get("conditions","").splitlines() if x.strip()],actions=[x.strip() for x in request.POST.get("actions","").splitlines() if x.strip()],status="paused")
+        if action=="create":
+            event=request.POST.get("trigger_event","")
+            Automation.objects.create(name=request.POST["name"],trigger=request.POST["trigger"],
+                                      trigger_event=event if any(event==k for k,_ in TRIGGER_EVENTS) else "",
+                                      run_every_minutes=int(request.POST.get("run_every_minutes") or 60),
+                                      conditions=[x.strip() for x in request.POST.get("conditions","").splitlines() if x.strip()],
+                                      actions=[x.strip() for x in request.POST.get("actions","").splitlines() if x.strip()],
+                                      status="paused")
         elif action=="run": execute_workflow.delay(int(request.POST["id"])); messages.success(request,"Workflow execution queued")
         elif action in {"activate","pause"}: Automation.objects.filter(pk=request.POST["id"]).update(status="active" if action=="activate" else "paused")
         return redirect("automation-center")
-    return render(request,"automation_center.html",{"automations":Automation.objects.order_by("-created_at"),"runs":WorkflowRun.objects.select_related("automation").order_by("-started_at")[:30]})
+    return render(request,"automation_center.html",{"automations":Automation.objects.order_by("-created_at"),"runs":WorkflowRun.objects.select_related("automation").order_by("-started_at")[:30],"trigger_events":TRIGGER_EVENTS})
 
 @login_required
 def integrations_center(request):

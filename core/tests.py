@@ -9,7 +9,8 @@ from .models import (
     AeoEntry, AttentionItem, Automation, AuditLog, EmailCampaign, Integration,
     IntegrationCheck, Lead, MessageDelivery, Setting, WhatsAppTemplate, WorkflowRun,
 )
-from .tasks import execute_workflow, process_due_automations, send_campaign
+from .tasks import (build_digest, execute_workflow, process_due_automations,
+                    send_campaign, send_owner_digest, sweep_overdue_attention)
 
 
 class ApplicationTests(TestCase):
@@ -405,3 +406,132 @@ class RecordEditTests(TestCase):
         self.client.post("/audit/", {"action": "update", "id": entry.pk, "event": "tampered"})
         entry.refresh_from_db()
         self.assertEqual(entry.event, "system.note")
+
+
+class EventTriggerTests(TestCase):
+    """Automation.trigger_event must actually fire workflows on real events."""
+
+    def _flow(self, event, actions=None, status="active"):
+        return Automation.objects.create(
+            name=f"On {event}", trigger=event, trigger_event=event, conditions=[],
+            actions=actions or ["Assign lead score"], status=status)
+
+    def test_creating_a_lead_fires_its_workflow(self):
+        flow = self._flow("lead.created")
+        with self.captureOnCommitCallbacks(execute=True):
+            Lead.objects.create(first_name="Niamh", last_name="Byrne", email="niamh@example.ie")
+        run = WorkflowRun.objects.filter(automation=flow).first()
+        self.assertIsNotNone(run, "lead.created should have queued the workflow")
+        self.assertEqual(run.trigger_payload["event"], "lead.created")
+
+    def test_workflows_listening_for_other_events_do_not_fire(self):
+        other = self._flow("campaign.sent")
+        with self.captureOnCommitCallbacks(execute=True):
+            Lead.objects.create(first_name="A", last_name="B", email="ab@example.ie")
+        self.assertFalse(WorkflowRun.objects.filter(automation=other).exists())
+
+    def test_paused_workflows_do_not_fire(self):
+        paused = self._flow("lead.created", status="paused")
+        with self.captureOnCommitCallbacks(execute=True):
+            Lead.objects.create(first_name="C", last_name="D", email="cd@example.ie")
+        self.assertFalse(WorkflowRun.objects.filter(automation=paused).exists())
+
+    def test_consent_fires_only_on_the_transition(self):
+        flow = self._flow("lead.consented")
+        with self.captureOnCommitCallbacks(execute=True):
+            lead = Lead.objects.create(first_name="E", last_name="F", email="ef@example.ie")
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 0)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            lead.consent_at = timezone.now()
+            lead.save()
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            lead.company = "Changed Ltd"
+            lead.save()
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1,
+                         "editing an already-consented lead must not raise the event again")
+
+    def test_campaign_sent_fires_once(self):
+        flow = self._flow("campaign.sent", actions=["Create owner summary"])
+        campaign = EmailCampaign.objects.create(name="C", subject="S", content="x", segment="all")
+        with self.captureOnCommitCallbacks(execute=True):
+            campaign.status = "sent"
+            campaign.save()
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1)
+        with self.captureOnCommitCallbacks(execute=True):
+            campaign.recipients = 5
+            campaign.save()
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1)
+
+    def test_failed_delivery_fires_its_workflow(self):
+        flow = self._flow("delivery.failed", actions=["Create owner summary"])
+        with self.captureOnCommitCallbacks(execute=True):
+            MessageDelivery.objects.create(channel="email", recipient="x@example.ie",
+                                           template="t", status="failed", error="boom")
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1)
+
+    def test_event_loop_is_bounded(self):
+        """A workflow whose email fails raises delivery.failed; it must not recurse forever."""
+        self._flow("delivery.failed", actions=["Send welcome email"])
+        lead = Lead.objects.create(first_name="G", last_name="H", email="gh@example.ie")
+        with self.captureOnCommitCallbacks(execute=True):
+            MessageDelivery.objects.create(channel="email", recipient=lead.email,
+                                           template="t", status="failed", error="boom")
+        self.assertLess(WorkflowRun.objects.count(), 10)
+
+
+class OverdueSweepTests(TestCase):
+    def test_overdue_items_raise_the_event_once(self):
+        flow = Automation.objects.create(name="Escalate", trigger="overdue",
+                                         trigger_event="attention.overdue", conditions=[],
+                                         actions=["Create owner summary"], status="active")
+        item = AttentionItem.objects.create(severity="critical", category="Governance",
+                                            title="Late", confidence=90, source="Test",
+                                            recommendation="Act",
+                                            due_at=timezone.now() - timezone.timedelta(hours=2))
+        with self.captureOnCommitCallbacks(execute=True):
+            result = sweep_overdue_attention()
+        self.assertEqual(result["overdue"], 1)
+        item.refresh_from_db()
+        self.assertIsNotNone(item.overdue_notified_at)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            again = sweep_overdue_attention()
+        self.assertEqual(again["overdue"], 0, "the same item must not be reported twice")
+        self.assertEqual(WorkflowRun.objects.filter(automation=flow).count(), 1)
+
+    def test_items_still_in_time_are_untouched(self):
+        AttentionItem.objects.create(severity="low", category="X", title="Future", confidence=50,
+                                     source="Test", recommendation="Wait",
+                                     due_at=timezone.now() + timezone.timedelta(days=1))
+        self.assertEqual(sweep_overdue_attention()["overdue"], 0)
+
+
+class OwnerDigestTests(TestCase):
+    def setUp(self):
+        AttentionItem.objects.create(severity="critical", category="Governance / Ethical Alert",
+                                     title="Data privacy compliance risk", confidence=92,
+                                     source="Compliance Engine", recommendation="Review immediately")
+        AttentionItem.objects.create(severity="low", category="Auto-Executed", title="Backup done",
+                                     confidence=100, source="System", recommendation="None",
+                                     due_at=timezone.now() - timezone.timedelta(hours=3))
+        Lead.objects.create(first_name="New", last_name="Lead", email="new@example.ie")
+
+    def test_digest_collects_the_right_figures(self):
+        digest = build_digest()
+        self.assertEqual(len(digest["critical"]), 1)
+        self.assertEqual(len(digest["overdue"]), 1)
+        self.assertEqual(digest["new_leads"], 1)
+        self.assertEqual(digest["open_count"], 2)
+
+    def test_digest_email_is_sent_and_readable(self):
+        result = send_owner_digest()
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        self.assertIn("critical", message.subject)
+        self.assertIn("Data privacy compliance risk", message.body)
+        self.assertTrue(message.alternatives, "digest should carry an HTML part")
+        self.assertEqual(result["critical"], 1)
+        self.assertTrue(AuditLog.objects.filter(event="digest.sent").exists())

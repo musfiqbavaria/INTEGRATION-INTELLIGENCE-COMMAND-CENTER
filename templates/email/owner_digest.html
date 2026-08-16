@@ -1,0 +1,93 @@
+{% load tz %}<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Emerald Rozalia daily brief</title></head>
+<body style="margin:0;padding:24px;background:#020a12;color:#edf3f4;font:14px/1.55 Segoe UI,Arial,sans-serif">
+<div style="max-width:640px;margin:0 auto">
+
+  <h1 style="margin:0 0 4px;font-size:19px;color:#00d56f">Emerald Rozalia — daily brief</h1>
+  <p style="margin:0 0 20px;color:#aab8c0;font-size:12px">
+    Last {{ window_hours }} hours · generated {{ generated_at|date:"j M Y, H:i" }} (Europe/Dublin)
+  </p>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px">
+    <tr>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#f52222">{{ critical|length }}</div>
+        <div style="font-size:11px;color:#aab8c0">CRITICAL</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#ff7a00">{{ overdue|length }}</div>
+        <div style="font-size:11px;color:#aab8c0">OVERDUE</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#129ee8">{{ new_leads }}</div>
+        <div style="font-size:11px;color:#aab8c0">NEW LEADS</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#00d56f">{{ open_count }}</div>
+        <div style="font-size:11px;color:#aab8c0">OPEN ITEMS</div>
+      </td>
+    </tr>
+  </table>
+
+  {% if critical %}
+  <h2 style="font-size:14px;color:#f52222;margin:0 0 8px">Needs your decision</h2>
+  <ul style="margin:0 0 20px;padding-left:18px;color:#edf3f4">
+    {% for item in critical %}
+    <li style="margin-bottom:6px">
+      <b>{{ item.title }}</b>
+      <span style="color:#aab8c0">— {{ item.category }}, {{ item.confidence }}% confidence</span>
+      <div style="color:#aab8c0;font-size:12px">{{ item.recommendation }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if overdue %}
+  <h2 style="font-size:14px;color:#ff7a00;margin:0 0 8px">Past deadline</h2>
+  <ul style="margin:0 0 20px;padding-left:18px">
+    {% for item in overdue %}
+    <li style="margin-bottom:4px">{{ item.title }}
+      <span style="color:#aab8c0">— due {{ item.due_at|date:"j M, H:i" }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if campaigns %}
+  <h2 style="font-size:14px;color:#00d56f;margin:0 0 8px">Campaigns sent</h2>
+  <ul style="margin:0 0 20px;padding-left:18px">
+    {% for c in campaigns %}
+    <li style="margin-bottom:4px">{{ c.name }}
+      <span style="color:#aab8c0">— {{ c.recipients }} recipients, {{ c.failures }} failed</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2 style="font-size:14px;color:#edf3f4;margin:0 0 8px">Activity</h2>
+  <p style="margin:0 0 20px;color:#aab8c0">
+    {{ consented }} new consent{{ consented|pluralize }} ·
+    {{ unsubscribed }} unsubscribe{{ unsubscribed|pluralize }} ·
+    {{ workflow_runs }} workflow run{{ workflow_runs|pluralize }} ({{ workflow_failures }} failed) ·
+    {{ failed_deliveries }} failed deliver{{ failed_deliveries|pluralize:"y,ies" }} ·
+    {{ pending_decisions }} AI decision{{ pending_decisions|pluralize }} awaiting approval
+  </p>
+
+  {% if broken_integrations %}
+  <h2 style="font-size:14px;color:#e5aa00;margin:0 0 8px">Connections needing attention</h2>
+  <ul style="margin:0 0 20px;padding-left:18px">
+    {% for i in broken_integrations %}
+    <li style="margin-bottom:4px">{{ i.name }} <span style="color:#aab8c0">— {{ i.status }}{% if i.last_error %}: {{ i.last_error }}{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #344651;color:#aab8c0;font-size:12px">
+    Emerald Rozalia Limited · Marketing ERP Command Center · Limerick, Ireland
+  </p>
+
+</div>
+</body>
+</html>

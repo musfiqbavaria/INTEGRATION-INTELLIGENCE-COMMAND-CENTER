@@ -12,16 +12,19 @@ from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 from django.utils.html import strip_tags
 
+from django.conf import settings
+from django.template.loader import render_to_string
+
 from .models import (
-    AttentionItem, Automation, AuditLog, EmailCampaign, Lead, MessageDelivery,
-    WhatsAppTemplate, WorkflowRun,
+    AiDecision, AttentionItem, Automation, AuditLog, EmailCampaign, Integration,
+    IntegrationCheck, Lead, MessageDelivery, WhatsAppTemplate, WorkflowRun,
 )
 
 
 # --- action handlers -------------------------------------------------------
 # Each returns a short human-readable detail string, or raises on failure.
 
-def _action_send_email(automation, lead, action):
+def _action_send_email(automation, lead, action, context):
     if lead is None:
         raise LookupError("no lead in the trigger payload to email")
     if not lead.consent_at or lead.status == "unsubscribed":
@@ -30,7 +33,7 @@ def _action_send_email(automation, lead, action):
     body = f"Hello {lead.first_name},\n\nThis message was sent by the '{automation.name}' workflow."
     delivery = MessageDelivery.objects.create(
         channel="email", recipient=lead.email, template=automation.name,
-        status="sending", metadata={"automation_id": automation.id},
+        status="sending", metadata={"automation_id": automation.id, "depth": context.get("depth", 0)},
     )
     try:
         message = EmailMultiAlternatives(subject, body, None, [lead.email])
@@ -45,7 +48,7 @@ def _action_send_email(automation, lead, action):
     return f"emailed {lead.email}"
 
 
-def _action_score_lead(automation, lead, action):
+def _action_score_lead(automation, lead, action, context):
     if lead is None:
         raise LookupError("no lead in the trigger payload to score")
     score = 20
@@ -60,7 +63,7 @@ def _action_score_lead(automation, lead, action):
     return f"scored {lead.email} at {lead.score}"
 
 
-def _action_owner_summary(automation, lead, action):
+def _action_owner_summary(automation, lead, action, context):
     item = AttentionItem.objects.create(
         severity="low", category="Auto-Executed",
         title=f"{automation.name} completed",
@@ -71,7 +74,7 @@ def _action_owner_summary(automation, lead, action):
     return f"raised attention item #{item.pk}"
 
 
-def _action_send_whatsapp(automation, lead, action):
+def _action_send_whatsapp(automation, lead, action, context):
     from .services import send_whatsapp_template
     if lead is None or not lead.phone:
         raise LookupError("no lead phone number in the trigger payload")
@@ -81,7 +84,7 @@ def _action_send_whatsapp(automation, lead, action):
     recipient = re.sub(r"[^0-9]", "", lead.phone)
     delivery = MessageDelivery.objects.create(
         channel="whatsapp", recipient=recipient, template=template.name,
-        status="sending", metadata={"automation_id": automation.id},
+        status="sending", metadata={"automation_id": automation.id, "depth": context.get("depth", 0)},
     )
     try:
         delivery.external_id = send_whatsapp_template(recipient, template.name, template.language)
@@ -106,14 +109,14 @@ ACTION_HANDLERS = [
 WAIT_PATTERN = re.compile(r"^\s*wait\b", re.I)
 
 
-def _run_action(automation, lead, action):
+def _run_action(automation, lead, action, context):
     """Return (status, detail) for a single action string."""
     if WAIT_PATTERN.match(action):
         return "skipped", "delay steps are not executed inline"
     for pattern, handler in ACTION_HANDLERS:
         if pattern.search(action):
             try:
-                return "completed", handler(automation, lead, action)
+                return "completed", handler(automation, lead, action, context)
             except Exception as exc:
                 return "failed", f"{type(exc).__name__}: {exc}"[:300]
     return "skipped", "no handler matches this action"
@@ -137,6 +140,8 @@ def execute_workflow(automation_id, payload=None):
     """Run one workflow. Records what actually happened per action."""
     automation = Automation.objects.get(pk=automation_id)
     payload = payload or {}
+    if int(payload.get("depth", 0)) > 2:
+        return None  # event loop guard; see core/signals.py
     run = WorkflowRun.objects.create(automation=automation, status="running", trigger_payload=payload)
 
     lead = None
@@ -157,7 +162,7 @@ def execute_workflow(automation_id, payload=None):
             return run.id
 
         for action in automation.actions or []:
-            status, detail = _run_action(automation, lead, action)
+            status, detail = _run_action(automation, lead, action, payload)
             results.append({"action": action, "status": status, "detail": detail})
 
         run.actions_completed = results
@@ -256,3 +261,65 @@ def send_campaign(campaign_id):
         new_values={"id": campaign_id, "sent": sent, "failures": failures, "skipped": skipped},
     )
     return {"sent": sent, "failures": failures, "skipped": skipped}
+
+
+@shared_task
+def sweep_overdue_attention():
+    """Raise `attention.overdue` once for each item that has passed its deadline.
+
+    `overdue_notified_at` stops the same item being reported every time this runs.
+    """
+    from .signals import fire
+    now = timezone.now()
+    due = AttentionItem.objects.filter(due_at__lt=now, overdue_notified_at=None).exclude(status="resolved")
+    raised = 0
+    for item in due:
+        fire("attention.overdue", {
+            "attention_id": item.pk, "title": item.title,
+            "severity": item.severity, "category": item.category,
+        })
+        raised += 1
+    ids = list(due.values_list("pk", flat=True))
+    AttentionItem.objects.filter(pk__in=ids).update(overdue_notified_at=now)
+    return {"overdue": raised}
+
+
+def build_digest(window_hours=24):
+    """Everything the owner needs to know about the last day, as plain data."""
+    now = timezone.now()
+    since = now - timezone.timedelta(hours=window_hours)
+    open_items = AttentionItem.objects.exclude(status="resolved")
+    return {
+        "generated_at": timezone.localtime(now),
+        "window_hours": window_hours,
+        "critical": list(open_items.filter(severity="critical").order_by("-created_at")[:10]),
+        "open_count": open_items.count(),
+        "overdue": list(open_items.filter(due_at__lt=now).order_by("due_at")[:10]),
+        "new_leads": Lead.objects.filter(created_at__gte=since).count(),
+        "consented": Lead.objects.filter(consent_at__gte=since).count(),
+        "unsubscribed": Lead.objects.filter(status="unsubscribed", updated_at__gte=since).count(),
+        "campaigns": list(EmailCampaign.objects.filter(sent_at__gte=since).order_by("-sent_at")[:5]),
+        "failed_deliveries": MessageDelivery.objects.filter(status="failed", updated_at__gte=since).count(),
+        "workflow_runs": WorkflowRun.objects.filter(started_at__gte=since).count(),
+        "workflow_failures": WorkflowRun.objects.filter(started_at__gte=since, status="failed").count(),
+        "pending_decisions": AiDecision.objects.filter(status="pending").count(),
+        "broken_integrations": list(Integration.objects.exclude(status="connected")),
+    }
+
+
+@shared_task
+def send_owner_digest(window_hours=24):
+    """Email the owner a summary so the console does not have to be visited to learn anything."""
+    recipient = getattr(settings, "OWNER_EMAIL", "") or settings.DEFAULT_FROM_EMAIL
+    digest = build_digest(window_hours)
+    subject = (f"Emerald Rozalia daily brief — {len(digest['critical'])} critical, "
+               f"{len(digest['overdue'])} overdue")
+    html = render_to_string("email/owner_digest.html", digest)
+    message = EmailMultiAlternatives(subject, strip_tags(html), None, [recipient])
+    message.attach_alternative(html, "text/html")
+    message.send()
+    AuditLog.objects.create(event="digest.sent", new_values={
+        "recipient": recipient, "critical": len(digest["critical"]),
+        "overdue": len(digest["overdue"]), "open": digest["open_count"],
+    })
+    return {"sent_to": recipient, "critical": len(digest["critical"]), "overdue": len(digest["overdue"])}

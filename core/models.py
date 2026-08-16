@@ -2,6 +2,16 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+# Events a workflow can fire on. Anything else runs on its schedule only.
+TRIGGER_EVENTS=[
+    ("","Schedule only"),
+    ("lead.created","Lead created"),
+    ("lead.consented","Lead gave consent"),
+    ("campaign.sent","Email campaign finished sending"),
+    ("delivery.failed","Message delivery failed"),
+    ("attention.overdue","Attention item passed its deadline"),
+]
+
 class Timestamped(models.Model):
     created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
     class Meta: abstract=True
@@ -13,6 +23,7 @@ class Lead(Timestamped):
     first_name=models.CharField(max_length=80); last_name=models.CharField(max_length=80); email=models.EmailField(unique=True); phone=models.CharField(max_length=40,blank=True); company=models.CharField(max_length=160,blank=True); market=models.CharField(max_length=80,default="Ireland"); source=models.CharField(max_length=80,blank=True); status=models.CharField(max_length=30,default="new"); score=models.PositiveSmallIntegerField(default=0); consent_at=models.DateTimeField(null=True,blank=True)
 class AttentionItem(Timestamped):
     severity=models.CharField(max_length=20); category=models.CharField(max_length=100); title=models.CharField(max_length=220); impact=models.DecimalField(max_digits=14,decimal_places=2,null=True,blank=True); confidence=models.PositiveSmallIntegerField(default=0); source=models.CharField(max_length=120); recommendation=models.TextField(); status=models.CharField(max_length=30,default="pending"); due_at=models.DateTimeField(null=True,blank=True)
+    overdue_notified_at=models.DateTimeField(null=True,blank=True)
 class ContentItem(Timestamped):
     title=models.CharField(max_length=220); type=models.CharField(max_length=30); channel=models.CharField(max_length=80); status=models.CharField(max_length=30,default="draft"); body=models.TextField(); seo_score=models.PositiveSmallIntegerField(default=0); ai_confidence=models.PositiveSmallIntegerField(default=0); scheduled_at=models.DateTimeField(null=True,blank=True); published_at=models.DateTimeField(null=True,blank=True)
 class EmailCampaign(Timestamped):
@@ -20,6 +31,8 @@ class EmailCampaign(Timestamped):
 class Automation(Timestamped):
     name=models.CharField(max_length=180); trigger=models.CharField(max_length=220); conditions=models.JSONField(default=list); actions=models.JSONField(default=list); status=models.CharField(max_length=30,default="active"); runs=models.PositiveIntegerField(default=0); successes=models.PositiveIntegerField(default=0); failures=models.PositiveIntegerField(default=0); last_run_at=models.DateTimeField(null=True,blank=True)
     run_every_minutes=models.PositiveIntegerField(default=60,help_text="Scheduler runs this workflow when it has not run for this many minutes.")
+    trigger_event=models.CharField(max_length=40,blank=True,default="",choices=TRIGGER_EVENTS,
+                                   help_text="Fire immediately when this happens, instead of waiting for the schedule.")
     @property
     def is_due(self):
         if self.status!="active": return False

@@ -18,13 +18,20 @@ DATABASES = {"default": env.db("DATABASE_URL", default="postgresql://emerald_roz
 CACHES = {"default":{"BACKEND":"django.core.cache.backends.redis.RedisCache","LOCATION":env("REDIS_URL",default="redis://redis:6379/1")}}
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
-CELERY_BEAT_SCHEDULE = {"process-automations-every-minute":{"task":"core.tasks.process_due_automations","schedule":60.0}}
+from celery.schedules import crontab
+CELERY_BEAT_SCHEDULE = {
+    "process-automations-every-minute": {"task": "core.tasks.process_due_automations", "schedule": 60.0},
+    # Raise attention.overdue once an item passes its deadline.
+    "sweep-overdue-attention": {"task": "core.tasks.sweep_overdue_attention", "schedule": 300.0},
+    # 07:00 Europe/Dublin, so the brief is waiting at the start of the day.
+    "owner-daily-digest": {"task": "core.tasks.send_owner_digest", "schedule": crontab(hour=7, minute=0)},
+}
 AUTH_PASSWORD_VALIDATORS = [{"NAME":"django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},{"NAME":"django.contrib.auth.password_validation.MinimumLengthValidator","OPTIONS":{"min_length":12}},{"NAME":"django.contrib.auth.password_validation.CommonPasswordValidator"}]
 LANGUAGE_CODE="en-ie"; TIME_ZONE="Europe/Dublin"; USE_I18N=True; USE_TZ=True
 STATIC_URL="/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; STATICFILES_DIRS=[BASE_DIR/"static"]
 STORAGES={"staticfiles":{"BACKEND":"django.contrib.staticfiles.storage.StaticFilesStorage" if DEBUG else "whitenoise.storage.CompressedManifestStaticFilesStorage"},"default":{"BACKEND":"django.core.files.storage.FileSystemStorage"}}
 DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"; LOGIN_URL="login"; LOGIN_REDIRECT_URL="dashboard"; LOGOUT_REDIRECT_URL="login"
 SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO","https"); SECURE_SSL_REDIRECT=not DEBUG; SESSION_COOKIE_SECURE=not DEBUG; CSRF_COOKIE_SECURE=not DEBUG; SESSION_COOKIE_HTTPONLY=True; SESSION_COOKIE_SAMESITE="Lax"; SECURE_HSTS_SECONDS=31536000 if not DEBUG else 0; SECURE_HSTS_INCLUDE_SUBDOMAINS=True; SECURE_HSTS_PRELOAD=True; SECURE_CONTENT_TYPE_NOSNIFF=True; X_FRAME_OPTIONS="DENY"; REFERRER_POLICY="strict-origin-when-cross-origin"
-EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend"; EMAIL_HOST=env("SMTP_HOST",default=""); EMAIL_PORT=env.int("SMTP_PORT",default=587); EMAIL_HOST_USER=env("SMTP_USERNAME",default=""); EMAIL_HOST_PASSWORD=env("SMTP_PASSWORD",default=""); EMAIL_USE_TLS=env.bool("SMTP_USE_TLS",default=True); DEFAULT_FROM_EMAIL=env("MAIL_FROM",default="Emerald Rozalia Limited <urmos@rozalia.ie>")
+EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend"; EMAIL_HOST=env("SMTP_HOST",default=""); EMAIL_PORT=env.int("SMTP_PORT",default=587); EMAIL_HOST_USER=env("SMTP_USERNAME",default=""); EMAIL_HOST_PASSWORD=env("SMTP_PASSWORD",default=""); EMAIL_USE_TLS=env.bool("SMTP_USE_TLS",default=True); DEFAULT_FROM_EMAIL=env("MAIL_FROM",default="Emerald Rozalia Limited <urmos@rozalia.ie>"); OWNER_EMAIL=env("OWNER_EMAIL",default="urmos@rozalia.ie")
 OPENAI_API_KEY=env("OPENAI_API_KEY",default=""); OPENAI_MODEL=env("OPENAI_MODEL",default="gpt-5.6")
 WHATSAPP_ACCESS_TOKEN=env("WHATSAPP_ACCESS_TOKEN",default=""); WHATSAPP_PHONE_NUMBER_ID=env("WHATSAPP_PHONE_NUMBER_ID",default=""); WHATSAPP_BUSINESS_ACCOUNT_ID=env("WHATSAPP_BUSINESS_ACCOUNT_ID",default=""); WHATSAPP_VERIFY_TOKEN=env("WHATSAPP_VERIFY_TOKEN",default=""); WHATSAPP_APP_SECRET=env("WHATSAPP_APP_SECRET",default="")
