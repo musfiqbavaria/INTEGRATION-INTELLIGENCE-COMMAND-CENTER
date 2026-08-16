@@ -39,6 +39,12 @@ Run it:
 python manage.py runserver --settings=config.settings_local
 ```
 
+Do **not** add `--noreload`. Since Django 5.1 the cached template loader is
+active even when `DEBUG=True`, and template reloading depends on the
+autoreloader. With `--noreload` the process serves the templates it cached at
+startup, so edits to any `.html` file appear to have no effect until you
+restart the server.
+
 Then sign in at `http://127.0.0.1:8000/login/` as `urmos@rozalia.ie` with the
 `OWNER_PASSWORD` you just used.
 

@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
 <body>
+{% include "_icons.html" %}
 <a class="skip" href="#main">Skip to content</a>
 <div class="app-shell">
 
@@ -19,33 +20,33 @@
 
     <div class="side-title">MAIN NAVIGATION</div>
     <nav class="nav" aria-label="Main">
-      <a href="{% url 'dashboard' %}"><i aria-hidden="true">⌂</i>Dashboard</a>
-      <a href="{% url 'command-center' %}"><i aria-hidden="true">⌘</i>Command Center</a>
-      <a href="{% url 'module' 'leads' %}"><i aria-hidden="true">♟</i>Leads &amp; Customers</a>
-      <a href="{% url 'module' 'campaigns' %}"><i aria-hidden="true">⚑</i>Campaigns</a>
-      <a href="{% url 'module' 'content' %}"><i aria-hidden="true">✎</i>Content Center</a>
-      <a href="{% url 'email-center' %}"><i aria-hidden="true">✉</i>Email Marketing</a>
-      <a href="{% url 'aeo-center' %}"><i aria-hidden="true">◎</i>AI Optimized Marketing (AEO)</a>
-      <a href="{% url 'automation-center' %}"><i aria-hidden="true">⚙</i>Automation &amp; Workflows</a>
-      <a href="{% url 'integrations-center' %}"><i aria-hidden="true">⌘</i>Integration Center</a>
-      <a href="{% url 'module' 'analytics' %}"><i aria-hidden="true">⌁</i>Analytics &amp; Reports</a>
-      <a href="{% url 'module' 'intelligence' %}"><i aria-hidden="true">◉</i>AI Intelligence Suite</a>
-      <a href="{% url 'module' 'finance' %}"><i aria-hidden="true">€</i>Finance &amp; Profitability</a>
-      <a href="{% url 'whatsapp-center' %}"><i aria-hidden="true">◈</i>WhatsApp Center</a>
-      <a href="{% url 'module' 'settings' %}"><i aria-hidden="true">⚙</i>Settings &amp; Preferences</a>
-      <a href="{% url 'module' 'users' %}"><i aria-hidden="true">♙</i>User &amp; Permissions</a>
-      <a href="{% url 'module' 'audit' %}"><i aria-hidden="true">▤</i>Audit Logs</a>
-      <a href="{% url 'module' 'support' %}"><i aria-hidden="true">?</i>Help Desk &amp; Support</a>
+      <a href="{% url 'dashboard' %}"><svg class="ico"><use href="#i-home"/></svg>Dashboard</a>
+      <a href="{% url 'command-center' %}"><svg class="ico"><use href="#i-grid"/></svg>Command Center</a>
+      <a href="{% url 'module' 'leads' %}"><svg class="ico"><use href="#i-users"/></svg>Leads &amp; Customers</a>
+      <a href="{% url 'module' 'campaigns' %}"><svg class="ico"><use href="#i-flag"/></svg>Campaigns</a>
+      <a href="{% url 'module' 'content' %}"><svg class="ico"><use href="#i-pen"/></svg>Content Center</a>
+      <a href="{% url 'email-center' %}"><svg class="ico"><use href="#i-mail"/></svg>Email Marketing</a>
+      <a href="{% url 'aeo-center' %}"><svg class="ico"><use href="#i-target"/></svg>AI Optimized Marketing (AEO)</a>
+      <a href="{% url 'automation-center' %}"><svg class="ico"><use href="#i-workflow"/></svg>Automation &amp; Workflows</a>
+      <a href="{% url 'integrations-center' %}"><svg class="ico"><use href="#i-plug"/></svg>Integration Center</a>
+      <a href="{% url 'module' 'analytics' %}"><svg class="ico"><use href="#i-chart"/></svg>Analytics &amp; Reports</a>
+      <a href="{% url 'module' 'intelligence' %}"><svg class="ico"><use href="#i-cpu"/></svg>AI Intelligence Suite</a>
+      <a href="{% url 'module' 'finance' %}"><svg class="ico"><use href="#i-euro"/></svg>Finance &amp; Profitability</a>
+      <a href="{% url 'whatsapp-center' %}"><svg class="ico"><use href="#i-chat"/></svg>WhatsApp Center</a>
+      <a href="{% url 'module' 'settings' %}"><svg class="ico"><use href="#i-settings"/></svg>Settings &amp; Preferences</a>
+      <a href="{% url 'module' 'users' %}"><svg class="ico"><use href="#i-users"/></svg>User &amp; Permissions</a>
+      <a href="{% url 'module' 'audit' %}"><svg class="ico"><use href="#i-list"/></svg>Audit Logs</a>
+      <a href="{% url 'module' 'support' %}"><svg class="ico"><use href="#i-headset"/></svg>Help Desk &amp; Support</a>
     </nav>
 
     <div class="side-title quick-label">QUICK ACTIONS</div>
     <div class="quick-actions">
-      <a href="{% url 'orchestrator' %}">♙ AI Assistant</a>
-      <a href="{% url 'integration-health' %}">⌘ Connection Health</a>
+      <a href="{% url 'orchestrator' %}"><svg class="ico"><use href="#i-bot"/></svg>AI Assistant</a>
+      <a href="{% url 'integration-health' %}"><svg class="ico"><use href="#i-plug"/></svg>Connection Health</a>
     </div>
 
     <div class="support">
-      <b>◉ Need help?</b>
+      <b><svg class="ico"><use href="#i-headset"/></svg>Need help?</b>
       <small>Owner Support Center</small>
       <a href="{% url 'module' 'support' %}">Open support →</a>
     </div>
@@ -60,12 +61,12 @@
 
 <footer>
   <div>EMERALD ROZALIA LIMITED<small>Python Marketing ERP Command Center</small></div>
-  <span>♢ Secure &amp; Encrypted</span>
-  <span>♙ Zero Trust Architecture</span>
-  <span>◴ Audit Logged</span>
-  <span>⚖ AI Responsible &amp; Ethical</span>
-  <a href="tel:0899788187">☎ 089 978 8187</a>
-  <span>📍 Limerick, Ireland</span>
+  <span><svg class="ico"><use href="#i-shield"/></svg>Secure &amp; Encrypted</span>
+  <span><svg class="ico"><use href="#i-check"/></svg>Zero Trust Architecture</span>
+  <span><svg class="ico"><use href="#i-list"/></svg>Audit Logged</span>
+  <span><svg class="ico"><use href="#i-scales"/></svg>AI Responsible &amp; Ethical</span>
+  <a href="tel:0899788187"><svg class="ico"><use href="#i-headset"/></svg>089 978 8187</a>
+  <span><svg class="ico"><use href="#i-target"/></svg>Limerick, Ireland</span>
 </footer>
 
 <script src="{% static 'js/app.js' %}" defer></script>

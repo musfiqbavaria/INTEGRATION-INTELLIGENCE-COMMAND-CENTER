@@ -228,13 +228,29 @@ a { color: inherit; }
   transition: background .12s ease, color .12s ease;
 }
 
-.nav a i {
-  font-style: normal;
+/* Icon system ------------------------------------------------------------
+   One inline sprite per page, referenced by <svg class="ico"><use href="#i-x">.
+   A stroke set, so colour follows currentColor and every icon inherits the
+   severity or state colour of whatever contains it. Replaces emoji glyphs,
+   which fell back to whatever font the OS had and rendered inconsistently. */
+.icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+.ico {
   width: 16px;
+  height: 16px;
   flex: none;
-  text-align: center;
-  opacity: .85;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -3px;
 }
+
+.nav a .ico { opacity: .85; }
+.nav a.active .ico { opacity: 1; }
+.quick-actions .ico, .support b .ico { width: 15px; height: 15px; }
+footer .ico { width: 14px; height: 14px; opacity: .8; margin-right: 5px; }
 
 .nav a:hover { background: rgba(6, 121, 67, .45); }
 
@@ -1436,3 +1452,126 @@ footer a:hover { color: var(--green); }
   .pipeline .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cmd-tools .tool small { display: none; }
 }
+
+/* Icon sizing per context ------------------------------------------------ */
+.cmd-tools .tool b .ico { width: 19px; height: 19px; }
+.cmd-tools .owner .avatar .ico { width: 17px; height: 17px; }
+.cmd-tools form button .ico { width: 17px; height: 17px; }
+.kpi-mark .ico { width: 15px; height: 15px; }
+.severity-tabs .ico { width: 15px; height: 15px; }
+.attention-cards h3 .ico { width: 15px; height: 15px; margin-right: 5px; color: var(--sev); }
+.pipeline .stages > article > .ico { width: 24px; height: 24px; color: var(--blue); stroke-width: 1.5; }
+.insights article .ico { width: 20px; height: 20px; color: var(--green); }
+.loop span i .ico { width: 15px; height: 15px; }
+.shortcuts a .ico { width: 15px; height: 15px; color: var(--green); }
+.summary article .ico { width: 15px; height: 15px; }
+
+/* ==========================================================================
+   Dashboard icon backgrounds
+   Bare glyphs floating in a dense console read as noise. Each icon sits in a
+   tinted rounded plate whose colour comes from its own currentColor, so the
+   severity language carries through to the icon chrome as well.
+   ========================================================================== */
+
+/* Command-centre header: each tool keeps its own accent */
+.cmd-tools .tool b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .05);
+  color: var(--muted);
+  transition: color .12s ease, background .12s ease;
+}
+
+.cmd-tools .tool b .ico { vertical-align: 0; }
+.cmd-tools .tool:hover b { background: rgba(0, 213, 111, .16); color: var(--green); }
+.cmd-tools .tool:nth-of-type(1) b { color: var(--green); background: rgba(0, 213, 111, .12); }
+.cmd-tools .tool:nth-of-type(2) b { color: var(--yellow); background: rgba(229, 170, 0, .12); }
+.cmd-tools .tool:nth-of-type(3) b { color: var(--sev-safe); background: rgba(33, 168, 76, .14); }
+.cmd-tools .tool:nth-of-type(4) b { color: var(--blue); background: rgba(18, 158, 232, .12); }
+.cmd-tools .tool:nth-of-type(5) b { color: var(--red); background: rgba(245, 34, 34, .12); }
+
+.cmd-tools .owner .avatar { background: rgba(0, 213, 111, .14); color: var(--green); }
+.cmd-tools .owner .avatar .ico,
+.cmd-tools form button .ico { vertical-align: 0; }
+
+/* KPI corner marks */
+.kpi-mark {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(33, 168, 76, .14);
+  color: var(--sev-safe);
+}
+
+.kpi-mark .ico { vertical-align: 0; }
+
+/* Attention cards — icon above the title so the heading keeps full width */
+.attention-cards h3 {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.attention-cards article { min-width: 0; }
+
+.attention-cards h3 .ico {
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  border-radius: 8px;
+  box-sizing: content-box;
+  color: var(--sev);
+  background: color-mix(in srgb, var(--sev) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sev) 28%, transparent);
+  vertical-align: 0;
+}
+
+/* Decision pipeline */
+.pipeline .stages .ico {
+  width: 20px;
+  height: 20px;
+  padding: 7px;
+  border-radius: 10px;
+  box-sizing: content-box;
+  color: var(--blue);
+  background: rgba(18, 158, 232, .12);
+  box-shadow: inset 0 0 0 1px rgba(18, 158, 232, .22);
+  vertical-align: 0;
+}
+
+/* Outcome loop */
+.loop span .ico {
+  width: 18px;
+  height: 18px;
+  padding: 5px;
+  border-radius: 8px;
+  box-sizing: content-box;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  vertical-align: 0;
+}
+
+.loop span .ico.safe { color: var(--sev-safe); }
+.loop span .ico.low { color: var(--sev-low); }
+.loop span .ico.medium { color: var(--sev-medium); }
+
+/* Attention insights */
+.insights article > .ico {
+  width: 18px;
+  height: 18px;
+  padding: 6px;
+  border-radius: 9px;
+  box-sizing: content-box;
+  color: var(--green);
+  background: rgba(0, 213, 111, .12);
+  vertical-align: 0;
+}
+
+/* Quick shortcuts */
+.shortcuts a .ico { color: var(--green); }

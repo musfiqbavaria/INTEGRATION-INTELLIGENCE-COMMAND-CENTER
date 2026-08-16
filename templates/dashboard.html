@@ -5,16 +5,16 @@
     <p>Connect <i>◆</i> Automate <i>◆</i> Integrate <i>◆</i> Intelligence <i>◆</i> Grow</p>
   </div>
   <div class="cmd-tools">
-    <a class="tool" href="{% url 'orchestrator' %}"><b>🤖</b><small>AI Assistant</small></a>
-    <a class="tool" href="{% url 'module' 'audit' %}"><b>🔔</b><small>Alerts</small>{% if open_count %}<em class="critical">{{ open_count }}</em>{% endif %}</a>
-    <a class="tool" href="{% url 'whatsapp-center' %}"><b>💬</b><small>WhatsApp</small>{% if whatsapp_pending %}<em class="safe">{{ whatsapp_pending }}</em>{% endif %}</a>
-    <a class="tool" href="{% url 'email-center' %}"><b>✉</b><small>Email</small>{% if email_drafts %}<em>{{ email_drafts }}</em>{% endif %}</a>
-    <a class="tool" href="{% url 'integration-health' %}"><b>⚠</b><small>Red Alert</small></a>
+    <a class="tool" href="{% url 'orchestrator' %}"><b><svg class="ico"><use href="#i-bot"/></svg></b><small>AI Assistant</small></a>
+    <a class="tool" href="{% url 'module' 'audit' %}"><b><svg class="ico"><use href="#i-bell"/></svg></b><small>Alerts</small>{% if open_count %}<em class="critical">{{ open_count }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'whatsapp-center' %}"><b><svg class="ico"><use href="#i-chat"/></svg></b><small>WhatsApp</small>{% if whatsapp_pending %}<em class="safe">{{ whatsapp_pending }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'email-center' %}"><b><svg class="ico"><use href="#i-mail"/></svg></b><small>Email</small>{% if email_drafts %}<em>{{ email_drafts }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'integration-health' %}"><b><svg class="ico"><use href="#i-alert"/></svg></b><small>Red Alert</small></a>
     <div class="owner">
-      <span class="avatar">◉</span>
+      <span class="avatar"><svg class="ico"><use href="#i-users"/></svg></span>
       <span><small>Owner</small><b>{{ request.user.get_full_name|default:request.user.username }}</b><small>{{ generated_at|date:"j M Y · H:i" }} (Europe/Dublin)</small></span>
     </div>
-    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button title="Sign out">⏻</button></form>
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button title="Sign out"><svg class="ico"><use href="#i-power"/></svg></button></form>
   </div>
 </header>
 
@@ -47,7 +47,7 @@
     <small>ACTIVE AUTOMATIONS</small>
     <strong>{{ automations_active }}</strong>
     <span class="delta"><i>Running</i></span>
-    <span class="kpi-mark safe">⚙</span>
+    <span class="kpi-mark safe"><svg class="ico"><use href="#i-workflow"/></svg></span>
   </article>
   <article>
     <small>WHATSAPP MESSAGES</small>
@@ -59,7 +59,7 @@
     <small>ONE-MAN-TEAM MODE</small>
     <strong>{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</strong>
     <span class="delta"><i>AI decision confidence</i></span>
-    <span class="kpi-mark safe">🛡</span>
+    <span class="kpi-mark safe"><svg class="ico"><use href="#i-shield"/></svg></span>
   </article>
 </section>
 
@@ -71,12 +71,12 @@
       <button type="button" class="high" data-filter="high"><i aria-hidden="true">▲</i>High</button>
       <button type="button" class="medium" data-filter="medium"><i aria-hidden="true">◆</i>Medium</button>
       <button type="button" class="low" data-filter="low"><i aria-hidden="true">●</i>Low<small>(Ocean Blue)</small></button>
-      <button type="button" class="safe" data-filter="safe"><i aria-hidden="true">✓</i>Safe</button>
+      <button type="button" class="safe" data-filter="safe"><svg class="ico"><use href="#i-check"/></svg>Safe</button>
     </div>
     <div class="attention-cards">
       {% for card in cards %}
       <article class="{{ card.tone }}">
-        <h3><i aria-hidden="true">{{ card.icon }}</i>{{ card.title }}</h3>
+        <h3><svg class="ico"><use href="#i-{{ card.icon }}"/></svg>{{ card.title }}</h3>
         <p>{{ card.desc }}</p>
         <b>{{ card.count }}</b>
       </article>
@@ -135,12 +135,12 @@
     <div class="stages">
       <article>
         <h4>DATA INPUTS</h4>
-        <i aria-hidden="true">🗄</i>
+        <svg class="ico"><use href="#i-database"/></svg>
         <p>Campaign · Audience · Financial · Behaviour · Market · System · External</p>
       </article>
       <article>
         <h4>CONFIDENCE ALGORITHM</h4>
-        <i aria-hidden="true">🧠</i>
+        <svg class="ico"><use href="#i-cpu"/></svg>
         <p>Scored on data quality, completeness, history and behaviour</p>
         <b>{% if avg_confidence %}{{ avg_confidence }}%{% else %}—{% endif %}</b><small>current average</small>
       </article>
@@ -155,19 +155,19 @@
       </article>
       <article>
         <h4>IMPACT FORECAST</h4>
-        <i aria-hidden="true">📈</i>
+        <svg class="ico"><use href="#i-trend"/></svg>
         <p>Forecasts cost, revenue and risk per scenario</p>
         <small>Horizon 7D · 30D · 90D</small>
       </article>
       <article>
         <h4>OWNER INTENT</h4>
-        <i aria-hidden="true">🎓</i>
+        <svg class="ico"><use href="#i-graduate"/></svg>
         <p>Learns owner decisions and preferences to improve suggestions</p>
         <b class="safe">{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</b><small>learning strength</small>
       </article>
       <article>
         <h4>VISUAL STORY MODE</h4>
-        <i aria-hidden="true">📖</i>
+        <svg class="ico"><use href="#i-book"/></svg>
         <p>What happened · what changed · what matters · what to do</p>
       </article>
       <article>
@@ -242,10 +242,10 @@
   <aside class="panel insights">
     <h3>ATTENTION INSIGHTS</h3>
     <div>
-      <article><i aria-hidden="true">◷</i><span>Avg. confidence<b>{% if avg_confidence %}{{ avg_confidence }}%{% else %}—{% endif %}</b></span></article>
-      <article><i aria-hidden="true">⏰</i><span>Overdue items<b>{{ overdue }}</b></span></article>
-      <article><i aria-hidden="true">✓</i><span>Auto-executed safe<b>{{ cards.4.count }}</b></span></article>
-      <article><i aria-hidden="true">◎</i><span>AI decision accuracy<b>{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</b></span></article>
+      <article><svg class="ico"><use href="#i-clock"/></svg><span>Avg. confidence<b>{% if avg_confidence %}{{ avg_confidence }}%{% else %}—{% endif %}</b></span></article>
+      <article><svg class="ico"><use href="#i-alarm"/></svg><span>Overdue items<b>{{ overdue }}</b></span></article>
+      <article><svg class="ico"><use href="#i-check"/></svg><span>Auto-executed safe<b>{{ cards.4.count }}</b></span></article>
+      <article><svg class="ico"><use href="#i-target"/></svg><span>AI decision accuracy<b>{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</b></span></article>
     </div>
   </aside>
 </div>
@@ -254,25 +254,25 @@
   <section class="panel loop">
     <b>ACTION &amp; OUTCOME LOOP</b>
     <div>
-      <span><i class="safe">▶</i>1. Action taken</span>
+      <span><i class="safe"><svg class="ico"><use href="#i-play"/></svg></i>1. Action taken</span>
       <em>→</em>
-      <span><i class="safe">✓</i>2. Actual result</span>
+      <span><i class="safe"><svg class="ico"><use href="#i-check"/></svg></i>2. Actual result</span>
       <em>→</em>
-      <span><i class="low">📊</i>3. Outcome analysis</span>
+      <span><i class="low"><svg class="ico"><use href="#i-chart"/></svg></i>3. Outcome analysis</span>
       <em>→</em>
-      <span><i class="medium">🧠</i>4. Learning update</span>
+      <span><i class="medium"><svg class="ico"><use href="#i-cpu"/></svg></i>4. Learning update</span>
     </div>
   </section>
 
   <section class="panel shortcuts">
     <b>QUICK SHORTCUTS</b>
     <div>
-      <a href="{% url 'module' 'intelligence' %}">🗳 Approval Center</a>
-      <a href="{% url 'module' 'audit' %}">🔔 Alert Center</a>
-      <a href="{% url 'module' 'analytics' %}">📈 Report Center</a>
-      <a href="{% url 'whatsapp-center' %}">💬 Communication Center</a>
-      <a href="{% url 'automation-center' %}">⚙ Action Center</a>
-      <a href="{% url 'module' 'support' %}">🎧 Help Desk</a>
+      <a href="{% url 'module' 'intelligence' %}"><svg class="ico"><use href="#i-inbox"/></svg>Approval Center</a>
+      <a href="{% url 'module' 'audit' %}"><svg class="ico"><use href="#i-bell"/></svg>Alert Center</a>
+      <a href="{% url 'module' 'analytics' %}"><svg class="ico"><use href="#i-chart"/></svg>Report Center</a>
+      <a href="{% url 'whatsapp-center' %}"><svg class="ico"><use href="#i-chat"/></svg>Communication Center</a>
+      <a href="{% url 'automation-center' %}"><svg class="ico"><use href="#i-gear"/></svg>Action Center</a>
+      <a href="{% url 'module' 'support' %}"><svg class="ico"><use href="#i-headset"/></svg>Help Desk</a>
     </div>
   </section>
 </div>

@@ -76,11 +76,11 @@ SEVERITIES=["critical","high","medium","low","safe"]
 # Owner-attention card definitions. `category` matches AttentionItem.category so
 # the counts come from the database rather than being written into the template.
 ATTENTION_CARDS=[
-    {"key":"critical","tone":"critical","icon":"🛡","title":"HIGH-RISK DECISIONS","desc":"Decisions requiring immediate owner approval with high impact or risk","category":"High-Risk Decision"},
-    {"key":"high","tone":"high","icon":"🎯","title":"HIGH-IMPACT OPPORTUNITIES","desc":"Opportunities with high potential impact and positive ROI","category":"High-Impact Opportunity"},
-    {"key":"conflict","tone":"conflict","icon":"🧠","title":"AI ENGINE CONFLICTS","desc":"Conflicts detected between AI engines or decision outcomes","category":"AI Engine Conflict"},
-    {"key":"low","tone":"low","icon":"❓","title":"LOW-CONFIDENCE SITUATIONS","desc":"AI confidence is low or data is incomplete, needs owner review","category":"Low-Confidence Situation"},
-    {"key":"safe","tone":"safe","icon":"⚖","title":"GOVERNANCE ETHICAL ALERTS","desc":"Policy, compliance, ethical or governance alerts","category":"Governance / Ethical Alert"},
+    {"key":"critical","tone":"critical","icon":"shield","title":"HIGH-RISK DECISIONS","desc":"Decisions requiring immediate owner approval with high impact or risk","category":"High-Risk Decision"},
+    {"key":"high","tone":"high","icon":"target","title":"HIGH-IMPACT OPPORTUNITIES","desc":"Opportunities with high potential impact and positive ROI","category":"High-Impact Opportunity"},
+    {"key":"conflict","tone":"conflict","icon":"cpu","title":"AI ENGINE CONFLICTS","desc":"Conflicts detected between AI engines or decision outcomes","category":"AI Engine Conflict"},
+    {"key":"low","tone":"low","icon":"help","title":"LOW-CONFIDENCE SITUATIONS","desc":"AI confidence is low or data is incomplete, needs owner review","category":"Low-Confidence Situation"},
+    {"key":"safe","tone":"safe","icon":"scales","title":"GOVERNANCE ETHICAL ALERTS","desc":"Policy, compliance, ethical or governance alerts","category":"Governance / Ethical Alert"},
 ]
 IMPACT_BANDS=[("Very High",20000),("High",10000),("Medium",5000),("Low",1000),("Very Low",0)]
 
