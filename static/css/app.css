@@ -1644,3 +1644,41 @@ footer a:hover { color: var(--green); }
   .toolbar { flex-wrap: wrap; }
   .pager { flex-wrap: wrap; justify-content: center; }
 }
+
+/* Row selection and bulk actions ----------------------------------------- */
+.data-table th.pick, .data-table td.pick { width: 34px; padding-right: 0; text-align: center; }
+
+.data-table input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.data-table tr.is-editing td { background: rgba(0, 213, 111, .07); }
+.data-table tr.is-editing td:first-child { box-shadow: inset 3px 0 0 var(--green); }
+
+/* `display: flex` here outranks the browser's [hidden] rule, so restore it. */
+.bulk-bar[hidden] { display: none; }
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s3) var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--accent-edge);
+  border-radius: var(--r-md);
+  background: #06301f;
+  font-size: var(--t-sm);
+}
+
+.bulk-bar > span { margin-right: auto; }
+.bulk-bar b { font-family: var(--font-data); color: var(--green); }
+
+.module-side .notice { margin: 0 var(--s3) var(--s3); font-size: var(--t-sm); }
+.module-side .notice b { font-family: var(--font-data); }
+.stack-form .form-row { display: flex; gap: var(--s2); align-items: center; }
+.stack-form .form-row .primary { flex: 1; }
+.stack-form .form-row .action { padding: 10px var(--s4); text-decoration: none; }
+.stack-form code { font-family: var(--font-data); color: var(--green); }

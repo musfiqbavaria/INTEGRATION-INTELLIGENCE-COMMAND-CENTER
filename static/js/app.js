@@ -104,8 +104,41 @@
     setInterval(tick, 1000);
   }
 
+  /* Row selection for bulk actions. The bar only appears once something is
+     picked, so it never occupies space it has not earned. */
+  function bulkSelection() {
+    var form = document.getElementById("bulk");
+    if (!form) { return; }
+    var bar = form.querySelector(".bulk-bar");
+    var counter = form.querySelector(".bulk-count");
+    var all = form.querySelector(".pick-all");
+    var boxes = form.querySelectorAll('input[name="selected"]');
+    if (!bar || !boxes.length) { return; }
+
+    function refresh() {
+      var picked = 0;
+      for (var i = 0; i < boxes.length; i++) { if (boxes[i].checked) { picked++; } }
+      counter.textContent = picked;
+      bar.hidden = picked === 0;
+      if (all) {
+        all.checked = picked === boxes.length && picked > 0;
+        all.indeterminate = picked > 0 && picked < boxes.length;
+      }
+    }
+
+    for (var i = 0; i < boxes.length; i++) { boxes[i].addEventListener("change", refresh); }
+    if (all) {
+      all.addEventListener("change", function () {
+        for (var j = 0; j < boxes.length; j++) { boxes[j].checked = all.checked; }
+        refresh();
+      });
+    }
+    refresh();
+  }
+
   markActiveNav();
   confirmDestructive();
   severityFilter();
   countdowns();
+  bulkSelection();
 })();

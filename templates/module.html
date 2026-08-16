@@ -20,7 +20,7 @@
   </section>
   {% endif %}
 
-  <div class="module-grid{% if not fields %} single{% endif %}">
+  <div class="module-grid{% if not form_fields %} single{% endif %}">
 
     <section class="panel">
       <h2>{{ title }}<span class="count">{% if query %}{{ match_count }} match{{ match_count|pluralize:",es" }} of {{ total_count }}{% else %}{{ shown_count }} of {{ total_count }}{% endif %}</span></h2>
@@ -34,10 +34,24 @@
         {% if query %}<a class="action" href="{% url 'module' slug %}">Clear</a>{% endif %}
       </form>
 
+      <form method="post" id="bulk">{% csrf_token %}
+      {% if not readonly and rows %}
+      <div class="bulk-bar" hidden>
+        <span><b class="bulk-count">0</b> selected</span>
+        {% if can_unsubscribe %}
+        <button class="action" name="action" value="bulk-unsubscribe"
+                data-confirm="Unsubscribe the selected leads? They will stop receiving campaigns.">Unsubscribe</button>
+        {% endif %}
+        <button class="action critical" name="action" value="bulk-delete"
+                data-confirm="Delete every selected record? This cannot be undone.">Delete selected</button>
+      </div>
+      {% endif %}
+
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
+              {% if not readonly %}<th class="pick"><input type="checkbox" class="pick-all" aria-label="Select all rows on this page"></th>{% endif %}
               <th>Ref</th>
               {% for column in columns %}<th>{{ column|title }}</th>{% endfor %}
               {% if not readonly %}<th class="actions">Actions</th>{% endif %}
@@ -45,7 +59,8 @@
           </thead>
           <tbody>
             {% for row in rows %}
-            <tr>
+            <tr{% if editing and editing.pk == row.pk %} class="is-editing"{% endif %}>
+              {% if not readonly %}<td class="pick"><input type="checkbox" name="selected" value="{{ row.pk }}" aria-label="Select record {{ row.pk }}"></td>{% endif %}
               <td class="id">#{{ row.pk }}</td>
               {% for cell in row.cells %}
               <td class="{{ cell.kind }}">
@@ -54,11 +69,11 @@
               {% endfor %}
               {% if not readonly %}
               <td class="actions">
-                <form method="post">{% csrf_token %}
-                  <input type="hidden" name="id" value="{{ row.pk }}">
-                  <button class="action critical" name="action" value="delete"
-                          data-confirm="Delete record #{{ row.pk }}? This cannot be undone.">Delete</button>
-                </form>
+                <a class="action" href="?{% if query %}q={{ query|urlencode }}&amp;{% endif %}{% if page_obj.number > 1 %}page={{ page_obj.number }}&amp;{% endif %}edit={{ row.pk }}#record-form">Edit</a>
+                <button class="action critical" name="action" value="delete"
+                        formaction="?{% if query %}q={{ query|urlencode }}&amp;{% endif %}page={{ page_obj.number }}"
+                        data-confirm="Delete record #{{ row.pk }}? This cannot be undone."
+                        onclick="this.form.querySelector('[name=id]').value={{ row.pk }}">Delete</button>
               </td>
               {% endif %}
             </tr>
@@ -78,6 +93,8 @@
           </tbody>
         </table>
       </div>
+      <input type="hidden" name="id" value="">
+      </form>
 
       {% if page_obj.paginator.num_pages > 1 %}
       <nav class="pager" aria-label="Pagination">
@@ -92,28 +109,43 @@
       {% endif %}
     </section>
 
-    {% if fields %}
-    <aside class="panel module-side">
-      <h2>Create record</h2>
+    {% if form_fields %}
+    <aside class="panel module-side" id="record-form">
+      <h2>{% if editing %}Edit record<span class="count">#{{ editing.pk }}</span>{% else %}Create record{% endif %}</h2>
+
+      {% if editing %}
+      <div class="notice">Editing <b>#{{ editing.pk }}</b>. Changes are written to the audit log.</div>
+      {% endif %}
+
       <form method="post" class="stack-form">{% csrf_token %}
-        {% for field in fields %}
+        {% if editing %}
+        <input type="hidden" name="action" value="update">
+        <input type="hidden" name="id" value="{{ editing.pk }}">
+        {% endif %}
+        {% for item in form_fields %}
         <label>
-          <span>{{ field.verbose_name|title }}{% if not field.blank %}<span class="req" title="Required">*</span>{% endif %}</span>
-          {% if field.get_internal_type == 'TextField' %}
-            <textarea name="{{ field.name }}" rows="4"></textarea>
-          {% elif field.get_internal_type == 'JSONField' %}
-            <textarea name="{{ field.name }}" rows="3" placeholder="One value per comma"></textarea>
+          <span>{{ item.field.verbose_name|title }}{% if not item.field.blank %}<span class="req" title="Required">*</span>{% endif %}</span>
+          {% if item.field.get_internal_type == 'TextField' %}
+            <textarea name="{{ item.field.name }}" rows="4">{{ item.value }}</textarea>
+          {% elif item.field.get_internal_type == 'JSONField' %}
+            <textarea name="{{ item.field.name }}" rows="3" placeholder="One value per comma">{{ item.value }}</textarea>
             <span class="hint">Separate multiple values with commas.</span>
-          {% elif field.get_internal_type == 'DateTimeField' %}
-            <input name="{{ field.name }}" placeholder="YYYY-MM-DD HH:MM"{% if not field.blank %} required{% endif %}>
-          {% elif field.get_internal_type == 'DateField' %}
-            <input name="{{ field.name }}" placeholder="YYYY-MM-DD"{% if not field.blank %} required{% endif %}>
+          {% elif item.field.get_internal_type == 'DateTimeField' %}
+            <input name="{{ item.field.name }}" value="{{ item.value }}" placeholder="YYYY-MM-DD HH:MM"{% if not item.field.blank %} required{% endif %}>
+          {% elif item.field.get_internal_type == 'DateField' %}
+            <input name="{{ item.field.name }}" value="{{ item.value }}" placeholder="YYYY-MM-DD"{% if not item.field.blank %} required{% endif %}>
+          {% elif item.field.name == 'password' %}
+            <input type="password" name="password" autocomplete="new-password"{% if not editing %} required{% endif %}>
+            <span class="hint">{% if editing %}Passwords are changed with <code>manage.py changepassword</code>, not here.{% else %}Stored hashed. The account gets no staff or owner rights.{% endif %}</span>
           {% else %}
-            <input name="{{ field.name }}"{% if not field.blank %} required{% endif %}>
+            <input name="{{ item.field.name }}" value="{{ item.value }}"{% if not item.field.blank %} required{% endif %}>
           {% endif %}
         </label>
         {% endfor %}
-        <button class="primary">Save record</button>
+        <div class="form-row">
+          <button class="primary">{% if editing %}Save changes{% else %}Save record{% endif %}</button>
+          {% if editing %}<a class="action" href="?{% if query %}q={{ query|urlencode }}&amp;{% endif %}page={{ page_obj.number }}">Cancel</a>{% endif %}
+        </div>
       </form>
     </aside>
     {% endif %}

@@ -34,6 +34,40 @@ def _back(request,slug):
     params=request.GET.urlencode()
     return redirect(f"{url}?{params}" if params else url)
 
+def _editable_fields(model,slug):
+    """Fields a user may set through the generic module form."""
+    if slug=="users":
+        # Rights are granted in the Django admin, never here.
+        allowed={"username","email","first_name","last_name","password"}
+        return [f for f in model._meta.fields if f.name in allowed]
+    return [f for f in model._meta.fields
+            if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
+
+def _form_values(model,post,names=None):
+    """Coerce POSTed strings into model field values."""
+    data={}
+    for f in model._meta.fields:
+        if names is not None and f.name not in names: continue
+        if f.name not in post: continue
+        raw=post.get(f.name)
+        if isinstance(f,models.JSONField): data[f.name]=[x.strip() for x in raw.split(",") if x.strip()]
+        elif isinstance(f,(models.IntegerField,models.DecimalField,models.FloatField)): data[f.name]=raw or 0
+        elif isinstance(f,models.BooleanField): data[f.name]=str(raw).lower() in {"1","true","on","yes"}
+        elif isinstance(f,(models.DateTimeField,models.DateField)): data[f.name]=raw or None
+        else: data[f.name]=raw
+    return data
+
+def _audit_changes(request,obj,before,after):
+    """Record only the fields whose value actually changed."""
+    old={k:str(v) for k,v in before.items() if str(v)!=str(after.get(k))}
+    new={k:str(v) for k,v in after.items() if str(v)!=str(before.get(k))}
+    if not new: return False
+    AuditLog.objects.create(user=request.user,event=f"{obj._meta.model_name}.updated",
+                            path=request.path,method="POST",
+                            ip_address=request.META.get("REMOTE_ADDR"),
+                            old_values=old,new_values=dict(new,record_id=obj.pk))
+    return True
+
 def _cell(field,value):
     """One table cell: a display string plus a kind that drives alignment and badges."""
     if value is None or value=="": return {"value":"—","kind":"muted"}
@@ -225,7 +259,7 @@ def module(request,slug):
                 else: target.delete(); messages.success(request,"User deleted")
             else:
                 model.objects.filter(pk=request.POST.get("id")).delete()
-        elif slug=="users":
+        elif slug=="users" and action=="create":
             # Accounts are created through create_user so the password is hashed.
             # Staff and superuser rights are deliberately NOT settable from this
             # form; grant them in the Django admin instead.
@@ -243,11 +277,61 @@ def module(request,slug):
             obj=get_object_or_404(model,pk=request.POST.get("id")); obj.status={"activate":"active","publish":"published"}.get(action,action+"d" if action in {"approve","reject"} else action); 
             if hasattr(obj,"decided_at"): obj.decided_at=timezone.now()
             obj.save()
-        else:
-            data={k:v for k,v in request.POST.items() if k not in {"csrfmiddlewaretoken","action"} and any(f.name==k for f in model._meta.fields)}
+        elif action=="bulk-delete":
+            ids=[i for i in request.POST.getlist("selected") if i.isdigit()]
+            if slug=="users":
+                ids=[i for i in ids if int(i)!=request.user.pk]
+                protected=User.objects.filter(pk__in=ids,is_superuser=True).count()
+                if protected and User.objects.filter(is_superuser=True).count()<=protected:
+                    messages.error(request,"That selection would remove every owner account"); return _back(request,slug)
+            removed,_=model.objects.filter(pk__in=ids).delete()
+            AuditLog.objects.create(user=request.user,event=f"{model._meta.model_name}.bulk_deleted",
+                                    path=request.path,method="POST",ip_address=request.META.get("REMOTE_ADDR"),
+                                    new_values={"ids":ids,"rows_removed":removed})
+            messages.success(request,f"{len(ids)} record{'' if len(ids)==1 else 's'} deleted")
+        elif action=="bulk-unsubscribe" and slug=="leads":
+            ids=[i for i in request.POST.getlist("selected") if i.isdigit()]
+            changed=Lead.objects.filter(pk__in=ids).update(consent_at=None,status="unsubscribed")
+            for email in Lead.objects.filter(pk__in=ids).values_list("email",flat=True):
+                ConsentEvent.objects.create(email=email.lower(),action="unsubscribe",source="bulk action")
+            messages.success(request,f"{changed} lead{'' if changed==1 else 's'} unsubscribed")
+        elif action=="update":
+            obj=model.objects.filter(pk=request.POST.get("id")).first()
+            if obj is None:
+                messages.error(request,"Record not found"); return _back(request,slug)
+            editable={f.name for f in _editable_fields(model,slug)}
+            before={n:getattr(obj,n,None) for n in editable}
+            if slug=="users":
+                # Rights and password are never changed through this form.
+                editable-={"password","is_staff","is_superuser"}
+                before={n:getattr(obj,n,None) for n in editable}
+            values=_form_values(model,request.POST,editable)
+            # A hidden secret is only replaced when a new value is supplied.
+            if getattr(obj,"is_secret",False) and not (request.POST.get("value") or "").strip():
+                values.pop("value",None)
+            # Dates render to minute/day precision. If the field comes back exactly
+            # as it was shown, leave the stored value alone rather than saving a
+            # truncated copy and reporting a change that never happened.
             for f in model._meta.fields:
-                if f.name in data and isinstance(f,(models.IntegerField,models.DecimalField)): data[f.name]=data[f.name] or 0
-                if f.name in data and isinstance(f,models.JSONField): data[f.name]=[x.strip() for x in data[f.name].split(",") if x.strip()]
+                if f.name not in values: continue
+                current=before.get(f.name)
+                if not current: continue
+                if isinstance(f,models.DateTimeField):
+                    shown=(timezone.localtime(current) if timezone.is_aware(current) else current).strftime("%Y-%m-%d %H:%M")
+                elif isinstance(f,models.DateField): shown=current.strftime("%Y-%m-%d")
+                else: continue
+                if str(values[f.name] or "").strip()==shown: values.pop(f.name)
+            for name,value in values.items(): setattr(obj,name,value)
+            try:
+                obj.full_clean(exclude=[f.name for f in model._meta.fields if f.name not in editable])
+                obj.save()
+                after={n:getattr(obj,n,None) for n in editable}
+                _audit_changes(request,obj,before,after)
+                messages.success(request,f"Record #{obj.pk} updated")
+            except Exception as exc:
+                messages.error(request,f"Could not update record: {exc}")
+        else:
+            data=_form_values(model,request.POST,{f.name for f in _editable_fields(model,slug)})
             try: model.objects.create(**data); messages.success(request,"Record created")
             except Exception as exc: messages.error(request,f"Could not create record: {exc}")
         return _back(request,slug)
@@ -283,18 +367,33 @@ def module(request,slug):
         return cells
 
     rows=[{"pk":obj.pk,"cells":_row_cells(obj)} for obj in items]
-    if readonly:
-        fields=[]
-    elif slug=="users":
-        # Only the safe subset. is_staff / is_superuser are not offered here.
-        allowed={"username","email","first_name","last_name","password"}
-        fields=[f for f in model._meta.fields if f.name in allowed]
-    else:
-        fields=[f for f in model._meta.fields if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
+    fields=[] if readonly else _editable_fields(model,slug)
+
+    # ?edit=<pk> turns the side panel into a pre-filled edit form.
+    editing=None
+    if fields and (request.GET.get("edit") or "").isdigit():
+        editing=model.objects.filter(pk=request.GET["edit"]).first()
+
+    def _initial(f):
+        if editing is None: return ""
+        if f.name=="password": return ""
+        value=getattr(editing,f.name,None)
+        # Never echo a hidden secret back into the form.
+        if f.name=="value" and getattr(editing,"is_secret",False): return ""
+        if value is None: return ""
+        if isinstance(f,models.JSONField):
+            return ", ".join(str(x) for x in value) if isinstance(value,(list,tuple)) else str(value)
+        if isinstance(f,models.DateTimeField):
+            return (timezone.localtime(value) if timezone.is_aware(value) else value).strftime("%Y-%m-%d %H:%M")
+        if isinstance(f,models.DateField): return value.strftime("%Y-%m-%d")
+        return value
+
+    form_fields=[{"field":f,"value":_initial(f)} for f in fields]
     total=model.objects.count()
     context={"title":TITLES.get(slug,slug.title()),"slug":slug,"rows":rows,"columns":[f.verbose_name for f in display_fields],
              "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows),
-             "query":query,"page_obj":page_obj,"match_count":paginator.count}
+             "query":query,"page_obj":page_obj,"match_count":paginator.count,
+             "form_fields":form_fields,"editing":editing,"can_unsubscribe":slug=="leads"}
     if readonly:
         agg=FinancialRecord.objects.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
         revenue=agg["revenue"] or 0; cost=agg["cost"] or 0

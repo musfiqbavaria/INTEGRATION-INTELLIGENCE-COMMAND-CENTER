@@ -317,3 +317,91 @@ class ModuleListingTests(TestCase):
         response = self.client.get("/audit/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["readonly"])
+
+
+class RecordEditTests(TestCase):
+    """Update, bulk actions and the audit trail they produce."""
+
+    def setUp(self):
+        self.owner = User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        self.lead = Lead.objects.create(first_name="Aoife", last_name="Murphy", email="aoife@example.ie",
+                                        company="Celtic Retail", market="Ireland", source="Website",
+                                        status="new", score=40)
+
+    def test_edit_form_is_prefilled(self):
+        response = self.client.get(f"/leads/?edit={self.lead.pk}")
+        self.assertEqual(response.context["editing"].pk, self.lead.pk)
+        values = {i["field"].name: i["value"] for i in response.context["form_fields"]}
+        self.assertEqual(values["first_name"], "Aoife")
+        self.assertEqual(values["company"], "Celtic Retail")
+
+    def test_update_changes_the_record(self):
+        self.client.post("/leads/", {"action": "update", "id": self.lead.pk, "first_name": "Aoife",
+                                     "last_name": "Murphy", "email": "aoife@example.ie",
+                                     "company": "Celtic Wholesale", "market": "Ireland",
+                                     "source": "Website", "status": "qualified", "score": 90, "phone": ""})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.company, "Celtic Wholesale")
+        self.assertEqual(self.lead.status, "qualified")
+        self.assertEqual(self.lead.score, 90)
+
+    def test_update_writes_only_the_changed_fields_to_the_audit_log(self):
+        self.client.post("/leads/", {"action": "update", "id": self.lead.pk, "first_name": "Aoife",
+                                     "last_name": "Murphy", "email": "aoife@example.ie",
+                                     "company": "Celtic Wholesale", "market": "Ireland",
+                                     "source": "Website", "status": "new", "score": 40, "phone": ""})
+        entry = AuditLog.objects.filter(event="lead.updated").first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.old_values["company"], "Celtic Retail")
+        self.assertEqual(entry.new_values["company"], "Celtic Wholesale")
+        self.assertNotIn("first_name", entry.new_values)
+
+    def test_invalid_update_is_rejected_and_record_untouched(self):
+        self.client.post("/leads/", {"action": "update", "id": self.lead.pk, "first_name": "Aoife",
+                                     "last_name": "Murphy", "email": "not-an-email",
+                                     "company": "X", "market": "Ireland", "source": "Website",
+                                     "status": "new", "score": 40, "phone": ""})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.email, "aoife@example.ie")
+
+    def test_editing_a_user_cannot_grant_rights(self):
+        colleague = User.objects.create_user("colleague@example.ie", password="Strong-Test-Password-123")
+        self.client.post("/users/", {"action": "update", "id": colleague.pk, "username": "colleague@example.ie",
+                                     "email": "c@example.ie", "first_name": "Col", "last_name": "League",
+                                     "is_superuser": "True", "is_staff": "True"})
+        colleague.refresh_from_db()
+        self.assertEqual(colleague.email, "c@example.ie")
+        self.assertFalse(colleague.is_superuser)
+        self.assertFalse(colleague.is_staff)
+
+    def test_secret_setting_keeps_its_value_when_left_blank(self):
+        setting = Setting.objects.create(group="smtp", key="api_key", value="KEEP-ME", is_secret=True)
+        self.client.post("/settings/", {"action": "update", "id": setting.pk, "group": "smtp",
+                                        "key": "api_key", "value": "", "is_secret": "on"})
+        setting.refresh_from_db()
+        self.assertEqual(setting.value, "KEEP-ME")
+
+    def test_bulk_delete_removes_the_selection_only(self):
+        keep = Lead.objects.create(first_name="Keep", last_name="Me", email="keep@example.ie")
+        gone = [Lead.objects.create(first_name=f"Gone{i}", last_name="X", email=f"gone{i}@example.ie").pk
+                for i in range(3)]
+        self.client.post("/leads/", {"action": "bulk-delete", "selected": gone})
+        self.assertFalse(Lead.objects.filter(pk__in=gone).exists())
+        self.assertTrue(Lead.objects.filter(pk=keep.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(event="lead.bulk_deleted").exists())
+
+    def test_bulk_unsubscribe_clears_consent(self):
+        a = Lead.objects.create(first_name="A", last_name="A", email="a@example.ie", consent_at=timezone.now())
+        b = Lead.objects.create(first_name="B", last_name="B", email="b@example.ie", consent_at=timezone.now())
+        self.client.post("/leads/", {"action": "bulk-unsubscribe", "selected": [a.pk, b.pk]})
+        for lead in (a, b):
+            lead.refresh_from_db()
+            self.assertEqual(lead.status, "unsubscribed")
+            self.assertIsNone(lead.consent_at)
+
+    def test_readonly_module_rejects_updates(self):
+        entry = AuditLog.objects.create(event="system.note", new_values={"a": 1})
+        self.client.post("/audit/", {"action": "update", "id": entry.pk, "event": "tampered"})
+        entry.refresh_from_db()
+        self.assertEqual(entry.event, "system.note")
