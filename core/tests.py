@@ -269,3 +269,51 @@ class WhatsAppWebhookTests(TestCase):
         delivery.refresh_from_db(); template.refresh_from_db()
         self.assertEqual(delivery.status, "delivered")
         self.assertEqual(template.delivered, 1)
+
+
+class ModuleListingTests(TestCase):
+    """Search and pagination on the generic record tables."""
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        for i in range(30):
+            Lead.objects.create(first_name=f"Name{i:02d}", last_name="Bulk",
+                                email=f"bulk{i:02d}@example.ie",
+                                company="Findable Ltd" if i < 7 else "Other Ltd")
+
+    def test_first_page_is_capped(self):
+        response = self.client.get("/leads/")
+        self.assertEqual(len(response.context["rows"]), 25)
+        self.assertEqual(response.context["total_count"], 30)
+        self.assertEqual(response.context["page_obj"].paginator.num_pages, 2)
+
+    def test_second_page_returns_the_remainder(self):
+        response = self.client.get("/leads/?page=2")
+        self.assertEqual(len(response.context["rows"]), 5)
+        self.assertEqual(response.context["page_obj"].number, 2)
+
+    def test_search_filters_across_text_columns(self):
+        response = self.client.get("/leads/?q=Findable")
+        self.assertEqual(response.context["match_count"], 7)
+        self.assertEqual(len(response.context["rows"]), 7)
+
+    def test_search_matches_email_and_is_case_insensitive(self):
+        self.assertEqual(self.client.get("/leads/?q=BULK07").context["match_count"], 1)
+
+    def test_search_with_no_matches_is_empty_not_everything(self):
+        response = self.client.get("/leads/?q=zzz-no-such-record")
+        self.assertEqual(response.context["match_count"], 0)
+        self.assertContains(response, "Nothing matches")
+
+    def test_delete_returns_to_the_same_search_and_page(self):
+        lead = Lead.objects.filter(company="Findable Ltd").first()
+        response = self.client.post("/leads/?q=Findable&page=1", {"action": "delete", "id": lead.pk})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("q=Findable", response["Location"])
+        self.assertFalse(Lead.objects.filter(pk=lead.pk).exists())
+
+    def test_readonly_module_still_paginates(self):
+        response = self.client.get("/audit/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["readonly"])

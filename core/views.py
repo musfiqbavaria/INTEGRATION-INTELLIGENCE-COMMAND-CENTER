@@ -5,9 +5,11 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.db import models
+from django.core.paginator import Paginator
 from django.db.models import Sum, Count, Q
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -24,6 +26,13 @@ SUPERUSER_ONLY={"users","audit","settings"}
 READONLY_SLUGS={"audit","analytics"}
 # Health-check slug -> the Integration.category it belongs to.
 SERVICE_CATEGORY={"database":"Database","smtp":"Email","whatsapp":"WhatsApp","openai":"AI"}
+PAGE_SIZE=25
+
+def _back(request,slug):
+    """Redirect to this module, preserving any active search and page."""
+    url=reverse("module",args=[slug])
+    params=request.GET.urlencode()
+    return redirect(f"{url}?{params}" if params else url)
 
 def _cell(field,value):
     """One table cell: a display string plus a kind that drives alignment and badges."""
@@ -205,7 +214,7 @@ def module(request,slug):
         action=request.POST.get("action","create")
         if readonly:
             messages.error(request,"This record set is read-only.")
-            return redirect("module",slug=slug)
+            return _back(request,slug)
         if action=="delete":
             if slug=="users":
                 target=User.objects.filter(pk=request.POST.get("id")).first()
@@ -241,8 +250,24 @@ def module(request,slug):
                 if f.name in data and isinstance(f,models.JSONField): data[f.name]=[x.strip() for x in data[f.name].split(",") if x.strip()]
             try: model.objects.create(**data); messages.success(request,"Record created")
             except Exception as exc: messages.error(request,f"Could not create record: {exc}")
-        return redirect("module",slug=slug)
-    items=model.objects.order_by("-pk")[:100]
+        return _back(request,slug)
+    # Search across the model's own text columns. CharField covers Email/Slug/URL
+    # subclasses; JSON and numeric columns are skipped because `icontains` on them
+    # is not portable across SQLite and PostgreSQL.
+    query=(request.GET.get("q") or "").strip()
+    queryset=model.objects.order_by("-pk")
+    if query:
+        condition=Q()
+        for field in model._meta.fields:
+            if field.name in DISPLAY_SKIP: continue
+            if isinstance(field,(models.CharField,models.TextField)):
+                condition|=Q(**{f"{field.name}__icontains":query})
+        queryset=queryset.filter(condition) if condition else queryset.none()
+
+    paginator=Paginator(queryset,PAGE_SIZE)
+    page_obj=paginator.get_page(request.GET.get("page"))
+    items=page_obj.object_list
+
     display_fields=[f for f in model._meta.fields if f.name not in DISPLAY_SKIP]
     # Record-keeping timestamps move to the end so identifying columns lead the table.
     display_fields.sort(key=lambda f: f.name in {"created_at","updated_at","date_joined","last_login"})
@@ -268,7 +293,8 @@ def module(request,slug):
         fields=[f for f in model._meta.fields if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
     total=model.objects.count()
     context={"title":TITLES.get(slug,slug.title()),"slug":slug,"rows":rows,"columns":[f.verbose_name for f in display_fields],
-             "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows)}
+             "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows),
+             "query":query,"page_obj":page_obj,"match_count":paginator.count}
     if readonly:
         agg=FinancialRecord.objects.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
         revenue=agg["revenue"] or 0; cost=agg["cost"] or 0
