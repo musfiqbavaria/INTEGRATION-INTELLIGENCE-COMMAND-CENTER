@@ -5,7 +5,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.db import models
-from django.db.models import Sum
+from django.db.models import Sum, Count, Q
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
@@ -45,10 +45,125 @@ def login_view(request):
 @require_POST
 def logout_view(request): logout(request); return redirect("login")
 
+SEVERITIES=["critical","high","medium","low","safe"]
+# Owner-attention card definitions. `category` matches AttentionItem.category so
+# the counts come from the database rather than being written into the template.
+ATTENTION_CARDS=[
+    {"key":"critical","tone":"critical","icon":"🛡","title":"HIGH-RISK DECISIONS","desc":"Decisions requiring immediate owner approval with high impact or risk","category":"High-Risk Decision"},
+    {"key":"high","tone":"high","icon":"🎯","title":"HIGH-IMPACT OPPORTUNITIES","desc":"Opportunities with high potential impact and positive ROI","category":"High-Impact Opportunity"},
+    {"key":"conflict","tone":"conflict","icon":"🧠","title":"AI ENGINE CONFLICTS","desc":"Conflicts detected between AI engines or decision outcomes","category":"AI Engine Conflict"},
+    {"key":"low","tone":"low","icon":"❓","title":"LOW-CONFIDENCE SITUATIONS","desc":"AI confidence is low or data is incomplete, needs owner review","category":"Low-Confidence Situation"},
+    {"key":"safe","tone":"safe","icon":"⚖","title":"GOVERNANCE ETHICAL ALERTS","desc":"Policy, compliance, ethical or governance alerts","category":"Governance / Ethical Alert"},
+]
+IMPACT_BANDS=[("Very High",20000),("High",10000),("Medium",5000),("Low",1000),("Very Low",0)]
+
+def _spark(values,width=112,height=26):
+    """SVG polyline points for a KPI sparkline. A flat line means insufficient history."""
+    values=[float(v or 0) for v in values]
+    if len(values)<2 or max(values)==min(values):
+        return f"0,{height/2:.1f} {width},{height/2:.1f}"
+    lo,hi=min(values),max(values); step=width/(len(values)-1)
+    return " ".join(f"{i*step:.1f},{height-((v-lo)/(hi-lo))*height:.1f}" for i,v in enumerate(values))
+
+def _delta(current,previous):
+    """Percentage change between two periods, or None when there is no baseline."""
+    if not previous: return None
+    return round((float(current)-float(previous))/float(previous)*100,1)
+
+def _impact_band(value):
+    """Bucket a monetary impact into the risk-matrix rows."""
+    v=float(value or 0)
+    for label,floor in IMPACT_BANDS:
+        if v>=floor: return label
+    return IMPACT_BANDS[-1][0]
+
 @login_required
 def dashboard(request):
-    totals=FinancialRecord.objects.aggregate(revenue=Sum("revenue"),cost=Sum("cost")); revenue=totals["revenue"] or 0; cost=totals["cost"] or 0
-    return render(request,"dashboard.html",{"attention":AttentionItem.objects.order_by("-created_at")[:8],"campaigns":Campaign.objects.order_by("-created_at")[:5],"leads":Lead.objects.count(),"revenue":revenue,"profit":revenue-cost,"decisions":AiDecision.objects.filter(status="pending").count()})
+    now=timezone.now(); today=timezone.localdate()
+    window_start=today-timezone.timedelta(days=30); prior_start=today-timezone.timedelta(days=60)
+
+    records=FinancialRecord.objects.all()
+    totals=records.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
+    revenue=totals["revenue"] or 0; cost=totals["cost"] or 0; profit=revenue-cost
+    attributed_leads=totals["leads"] or 0; customers=totals["customers"] or 0
+    conversion=round(customers/attributed_leads*100,1) if attributed_leads else 0
+
+    # 30-day window against the preceding 30 days, for the "vs Last 30 Days" deltas.
+    current=records.filter(recorded_on__gte=window_start).aggregate(r=Sum("revenue"),c=Sum("cost"),l=Sum("leads"),cu=Sum("customers"))
+    prior=records.filter(recorded_on__gte=prior_start,recorded_on__lt=window_start).aggregate(r=Sum("revenue"),c=Sum("cost"),l=Sum("leads"),cu=Sum("customers"))
+    cur_rev=current["r"] or 0; pri_rev=prior["r"] or 0
+    cur_profit=(current["r"] or 0)-(current["c"] or 0); pri_profit=(prior["r"] or 0)-(prior["c"] or 0)
+    cur_conv=round((current["cu"] or 0)/(current["l"] or 1)*100,1); pri_conv=round((prior["cu"] or 0)/(prior["l"] or 1)*100,1)
+
+    # Daily series drive the sparklines. Flat lines mean there is not enough history yet.
+    daily=list(records.values("recorded_on").annotate(r=Sum("revenue"),c=Sum("cost"),l=Sum("leads")).order_by("recorded_on"))
+    rev_series=[d["r"] or 0 for d in daily]
+    profit_series=[(d["r"] or 0)-(d["c"] or 0) for d in daily]
+    lead_series=[d["l"] or 0 for d in daily]
+
+    automations_active=Automation.objects.filter(status="active").count()
+    wa=WhatsAppTemplate.objects.aggregate(s=Sum("sent"),d=Sum("delivered"))
+    whatsapp_sent=wa["s"] or 0; whatsapp_delivered=wa["d"] or 0
+    # Delivery rate, not a period-over-period delta.
+    whatsapp_rate=round(whatsapp_delivered/whatsapp_sent*100,1) if whatsapp_sent else None
+    whatsapp_pending=MessageDelivery.objects.filter(channel="whatsapp").exclude(status="sent").count()
+    email_drafts=EmailCampaign.objects.filter(status="draft").count()
+
+    items=list(AttentionItem.objects.order_by("-created_at"))
+    open_items=[i for i in items if i.status!="resolved"]
+    for item in open_items:
+        item.is_overdue=bool(item.due_at and item.due_at<now)
+    by_severity={s:sum(1 for i in items if i.severity==s) for s in SEVERITIES}
+    by_category={row["category"]:row["n"] for row in AttentionItem.objects.values("category").annotate(n=Count("id"))}
+
+    cards=[dict(c,count=by_category.get(c["category"],0)) for c in ATTENTION_CARDS]
+    opportunity_value=AttentionItem.objects.filter(category="High-Impact Opportunity").aggregate(v=Sum("impact"))["v"] or 0
+    overdue=sum(1 for i in items if i.due_at and i.due_at<now and i.status!="resolved")
+
+    # 5x5 risk matrix: impact magnitude down, severity across. Both axes come from
+    # the AttentionItem rows, so an empty cell genuinely means no item in that band.
+    matrix=[{"label":label,
+             "cells":[{"n":sum(1 for i in items if i.severity==sev and _impact_band(i.impact)==label),"tone":sev}
+                      for sev in SEVERITIES]}
+            for label,_ in IMPACT_BANDS]
+    column_totals=[{"n":by_severity[s],"tone":s} for s in SEVERITIES]
+
+    filters=[{"key":"all","label":"All","count":len(items),"tone":"all"}]
+    filters+= [{"key":s,"label":l,"count":by_severity[s],"tone":s} for s,l in
+               [("critical","Critical"),("high","High Impact"),("medium","Medium"),("low","Low"),("safe","Safe")]]
+    filters.append({"key":"overdue","label":"Overdue","count":overdue,"tone":"overdue"})
+
+    summary=[
+        {"tone":"critical","count":by_severity["critical"],"title":"Critical Items","note":"Need immediate action"},
+        {"tone":"high","count":by_category.get("High-Impact Opportunity",0),"title":"High-Impact Opportunities","note":f"Potential value € {opportunity_value:,.0f}"},
+        {"tone":"conflict","count":by_category.get("AI Engine Conflict",0),"title":"AI Engine Conflicts","note":"Owner decision required"},
+        {"tone":"low","count":by_category.get("Low-Confidence Situation",0),"title":"Low-Confidence Items","note":"Review recommended"},
+        {"tone":"medium","count":by_category.get("Governance / Ethical Alert",0),"title":"Governance / Ethical Alerts","note":"Compliance action required"},
+        {"tone":"safe","count":by_severity["safe"],"title":"Safe / Auto-Executed","note":"Running smoothly"},
+    ]
+
+    avg_confidence=round(sum(i.confidence for i in items)/len(items)) if items else None
+    decisions=list(AiDecision.objects.all())
+    # None rather than 0 so the template can show "—" instead of implying a real
+    # score of zero when the orchestrator has not produced any decisions yet.
+    decision_accuracy=round(sum(d.confidence for d in decisions)/len(decisions),1) if decisions else None
+    risk_score=round(sum(d.risk_score for d in decisions)/len(decisions)) if decisions else None
+
+    return render(request,"dashboard.html",{
+        "revenue":revenue,"profit":profit,"leads":Lead.objects.count(),"conversion":conversion,
+        "automations_active":automations_active,"whatsapp_sent":whatsapp_sent,
+        "whatsapp_pending":whatsapp_pending,"email_drafts":email_drafts,
+        "revenue_delta":_delta(cur_rev,pri_rev),"profit_delta":_delta(cur_profit,pri_profit),
+        "leads_delta":_delta(current["l"] or 0,prior["l"] or 0),"conversion_delta":_delta(cur_conv,pri_conv),
+        "whatsapp_delta":whatsapp_rate,
+        "spark_revenue":_spark(rev_series),"spark_profit":_spark(profit_series),"spark_leads":_spark(lead_series),
+        "spark_conversion":_spark(lead_series),"spark_whatsapp":_spark(rev_series),
+        "cards":cards,"matrix":matrix,"column_totals":column_totals,"severities":SEVERITIES,
+        "filters":filters,"summary":summary,"attention":open_items[:8],"open_count":len(open_items),
+        "overdue":overdue,"avg_confidence":avg_confidence,"decision_accuracy":decision_accuracy,
+        "risk_score":risk_score,"decisions":AiDecision.objects.filter(status="pending").count(),
+        "generated_at":timezone.localtime(now),
+    })
 
 @login_required
 def module(request,slug):

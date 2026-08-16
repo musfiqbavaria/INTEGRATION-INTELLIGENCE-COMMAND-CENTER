@@ -13,6 +13,66 @@ Production full-stack rebuild of the Laravel command centre using Django 6, ASGI
 - PostgreSQL, Redis, Celery worker/scheduler, Gunicorn/Uvicorn and Docker Compose
 - Caddy HTTPS configuration, health endpoint and backup script
 
+## Local development
+
+Runs on SQLite with no Docker, PostgreSQL or Redis required. `config/settings_local.py`
+supplies the overrides; `config/settings.py` is left untouched.
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate                      # Windows
+# source .venv/bin/activate                 # macOS / Linux
+pip install -r requirements-local.txt
+```
+
+Create the database and an owner account:
+
+```bash
+python manage.py migrate --settings=config.settings_local
+set OWNER_PASSWORD=ChooseAStrongLocalPassword       # Windows CMD
+python manage.py seed_system --settings=config.settings_local
+```
+
+Run it:
+
+```bash
+python manage.py runserver --settings=config.settings_local
+```
+
+Then sign in at `http://127.0.0.1:8000/login/` as `urmos@rozalia.ie` with the
+`OWNER_PASSWORD` you just used.
+
+Run the tests:
+
+```bash
+python manage.py test --settings=config.settings_local
+```
+
+To avoid repeating `--settings`, export it once per shell:
+
+```bash
+set DJANGO_SETTINGS_MODULE=config.settings_local    # Windows CMD
+export DJANGO_SETTINGS_MODULE=config.settings_local # bash
+```
+
+What the local settings change, and why:
+
+- **SQLite and an in-memory cache**, so no database or broker services are needed.
+- **`SECURE_SSL_REDIRECT` and the secure-cookie flags off.** `config/settings.py`
+  derives them from `not DEBUG`. Left enabled they make the dev server answer 301
+  to every request and refuse to set a session cookie — and they are the reason
+  `manage.py test` fails with `301 != 200` under the production settings.
+- **Email printed to the console.** `.env` holds live SMTP credentials; without
+  this override, testing a campaign would send real mail to real leads.
+- **Celery runs inline** (`CELERY_TASK_ALWAYS_EAGER`), so `.delay()` executes
+  immediately and no Redis broker is required.
+
+`requirements-local.txt` omits `psycopg` and `gunicorn` deliberately: the first
+is unnecessary on SQLite and lacks a wheel for the newest Python on Windows, and
+the second cannot run on Windows at all.
+
+`local.sqlite3` is gitignored, so the local database never reaches the repository.
+
 ## Hetzner installation
 
 ```bash

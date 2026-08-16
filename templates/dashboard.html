@@ -1,112 +1,279 @@
 {% extends 'base.html' %}{% block content %}
-<header class="topbar">
-  <div>
+<header class="cmd-head">
+  <div class="cmd-title">
     <h1>INTEGRATION &amp; INTELLIGENCE COMMAND CENTER</h1>
-    <p>Connect • Automate • Integrate • Intelligence • Grow</p>
+    <p>Connect <i>◆</i> Automate <i>◆</i> Integrate <i>◆</i> Intelligence <i>◆</i> Grow</p>
   </div>
-  <div class="header-tools">
-    <a class="primary" href="{% url 'orchestrator' %}">🤖 AI Assistant</a>
-    <div class="owner">◉
-      <span>
-        <small>Owner</small>
-        <b>{{ request.user.get_full_name|default:request.user.username }}</b>
-        <small>Python 3.14.3</small>
-      </span>
+  <div class="cmd-tools">
+    <a class="tool" href="{% url 'orchestrator' %}"><b>🤖</b><small>AI Assistant</small></a>
+    <a class="tool" href="{% url 'module' 'audit' %}"><b>🔔</b><small>Alerts</small>{% if open_count %}<em class="critical">{{ open_count }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'whatsapp-center' %}"><b>💬</b><small>WhatsApp</small>{% if whatsapp_pending %}<em class="safe">{{ whatsapp_pending }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'email-center' %}"><b>✉</b><small>Email</small>{% if email_drafts %}<em>{{ email_drafts }}</em>{% endif %}</a>
+    <a class="tool" href="{% url 'integration-health' %}"><b>⚠</b><small>Red Alert</small></a>
+    <div class="owner">
+      <span class="avatar">◉</span>
+      <span><small>Owner</small><b>{{ request.user.get_full_name|default:request.user.username }}</b><small>{{ generated_at|date:"j M Y · H:i" }} (Europe/Dublin)</small></span>
     </div>
-    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button>Logout</button></form>
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button title="Sign out">⏻</button></form>
   </div>
 </header>
 
 <section class="kpis">
-  <article><small>TOTAL REVENUE</small><strong>€ {{ revenue|floatformat:0 }}</strong><span>Live ledger</span></article>
-  <article><small>TOTAL PROFIT</small><strong>€ {{ profit|floatformat:0 }}</strong><span>Net contribution</span></article>
-  <article><small>TOTAL LEADS</small><strong>{{ leads }}</strong><span>Database-backed</span></article>
-  <article><small>OWNER DECISIONS</small><strong>{{ decisions }}</strong><span>Pending review</span></article>
-  <article><small>ACTIVE AUTOMATIONS</small><strong>26</strong><span>Celery running</span></article>
-  <article><small>WHATSAPP</small><strong>24,850</strong><span>Cloud API ready</span></article>
-  <article><small>ONE-MAN-TEAM MODE</small><strong>98%</strong><span>Excellent</span></article>
+  <article>
+    <small>TOTAL REVENUE</small>
+    <strong>€ {{ revenue|floatformat:0 }}</strong>
+    <svg class="spark" viewBox="0 0 112 26" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ spark_revenue }}"/></svg>
+    <span class="delta {% if revenue_delta and revenue_delta < 0 %}down{% endif %}">{% if revenue_delta %}{% if revenue_delta > 0 %}▲{% else %}▼{% endif %} {{ revenue_delta }}%{% else %}—{% endif %}<i>vs Last 30 Days</i></span>
+  </article>
+  <article>
+    <small>TOTAL PROFIT</small>
+    <strong>€ {{ profit|floatformat:0 }}</strong>
+    <svg class="spark" viewBox="0 0 112 26" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ spark_profit }}"/></svg>
+    <span class="delta {% if profit_delta and profit_delta < 0 %}down{% endif %}">{% if profit_delta %}{% if profit_delta > 0 %}▲{% else %}▼{% endif %} {{ profit_delta }}%{% else %}—{% endif %}<i>vs Last 30 Days</i></span>
+  </article>
+  <article>
+    <small>TOTAL LEADS</small>
+    <strong>{{ leads }}</strong>
+    <svg class="spark blue" viewBox="0 0 112 26" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ spark_leads }}"/></svg>
+    <span class="delta {% if leads_delta and leads_delta < 0 %}down{% endif %}">{% if leads_delta %}{% if leads_delta > 0 %}▲{% else %}▼{% endif %} {{ leads_delta }}%{% else %}—{% endif %}<i>vs Last 30 Days</i></span>
+  </article>
+  <article>
+    <small>CONVERSION RATE</small>
+    <strong>{{ conversion }}%</strong>
+    <svg class="spark orange" viewBox="0 0 112 26" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ spark_conversion }}"/></svg>
+    <span class="delta {% if conversion_delta and conversion_delta < 0 %}down{% endif %}">{% if conversion_delta %}{% if conversion_delta > 0 %}▲{% else %}▼{% endif %} {{ conversion_delta }}%{% else %}—{% endif %}<i>vs Last 30 Days</i></span>
+  </article>
+  <article>
+    <small>ACTIVE AUTOMATIONS</small>
+    <strong>{{ automations_active }}</strong>
+    <span class="delta"><i>Running</i></span>
+    <span class="kpi-mark safe">⚙</span>
+  </article>
+  <article>
+    <small>WHATSAPP MESSAGES</small>
+    <strong>{{ whatsapp_sent|floatformat:0 }}</strong>
+    <svg class="spark" viewBox="0 0 112 26" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ spark_whatsapp }}"/></svg>
+    <span class="delta">{% if whatsapp_delta %}{{ whatsapp_delta }}%{% else %}—{% endif %}<i>delivered</i></span>
+  </article>
+  <article>
+    <small>ONE-MAN-TEAM MODE</small>
+    <strong>{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</strong>
+    <span class="delta"><i>AI decision confidence</i></span>
+    <span class="kpi-mark safe">🛡</span>
+  </article>
 </section>
 
-<div class="upper-grid">
+<div class="intel-grid">
   <section class="panel attention">
     <h2>OWNER ATTENTION – INTELLIGENCE LAYER</h2>
-
     <div class="severity-tabs">
-      <button type="button" class="critical" data-severity="critical"><i aria-hidden="true">!</i>Critical</button>
-      <button type="button" class="high" data-severity="high"><i aria-hidden="true">▲</i>High</button>
-      <button type="button" class="medium" data-severity="medium"><i aria-hidden="true">♦</i>Medium</button>
-      <button type="button" class="low" data-severity="low"><i aria-hidden="true">●</i>Low<small>(Ocean Blue)</small></button>
-      <button type="button" class="safe" data-severity="safe"><i aria-hidden="true">♟</i>Safe</button>
+      <button type="button" class="critical" data-filter="critical"><i aria-hidden="true">!</i>Critical</button>
+      <button type="button" class="high" data-filter="high"><i aria-hidden="true">▲</i>High</button>
+      <button type="button" class="medium" data-filter="medium"><i aria-hidden="true">◆</i>Medium</button>
+      <button type="button" class="low" data-filter="low"><i aria-hidden="true">●</i>Low<small>(Ocean Blue)</small></button>
+      <button type="button" class="safe" data-filter="safe"><i aria-hidden="true">✓</i>Safe</button>
     </div>
-
     <div class="attention-cards">
-      <article class="critical"><h3><i aria-hidden="true">♢</i>HIGH-RISK DECISIONS</h3><p>Immediate owner approval with high impact or risk.</p><b>5</b></article>
-      <article class="high"><h3><i aria-hidden="true">◎</i>HIGH-IMPACT OPPORTUNITIES</h3><p>Opportunities with positive ROI.</p><b>8</b></article>
-      <article class="conflict"><h3><i aria-hidden="true">⚯</i>AI ENGINE CONFLICTS</h3><p>Conflicts between evidence and outcomes.</p><b>3</b></article>
-      <article class="low"><h3><i aria-hidden="true">?</i>LOW-CONFIDENCE</h3><p>Incomplete data needs owner review.</p><b>7</b></article>
-      <article class="safe"><h3><i aria-hidden="true">⚖</i>GOVERNANCE ALERTS</h3><p>Policy, GDPR and ethical controls.</p><b>4</b></article>
+      {% for card in cards %}
+      <article class="{{ card.tone }}">
+        <h3><i aria-hidden="true">{{ card.icon }}</i>{{ card.title }}</h3>
+        <p>{{ card.desc }}</p>
+        <b>{{ card.count }}</b>
+      </article>
+      {% endfor %}
     </div>
   </section>
 
   <section class="panel heatmap">
-    <h2>RISK / IMPACT HEATMAP</h2>
+    <h2>RISK / IMPACT HEATMAP<span class="count">last 7 days</span></h2>
     <div class="table-wrap">
       <table>
-        <tr><th>Impact</th><th>Low</th><th>Medium</th><th>High</th><th>Critical</th></tr>
-        <tr><th>Very High</th><td class="hm-0">0</td><td class="hm-2">3</td><td class="hm-4">7</td><td class="hm-5">5</td></tr>
-        <tr><th>High</th><td class="hm-1">1</td><td class="hm-3">8</td><td class="hm-5">10</td><td class="hm-4">6</td></tr>
-        <tr><th>Medium</th><td class="hm-1">2</td><td class="hm-3">6</td><td class="hm-4">9</td><td class="hm-2">2</td></tr>
+        <thead>
+          <tr><th>Impact →</th>{% for s in severities %}<th>{{ s|title }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+          {% for row in matrix %}
+          <tr>
+            <th>{{ row.label }}</th>
+            {% for cell in row.cells %}<td class="hm {{ cell.tone }}{% if not cell.n %} zero{% endif %}">{{ cell.n }}</td>{% endfor %}
+          </tr>
+          {% endfor %}
+          <tr class="hm-total">
+            <th>Total Items</th>
+            {% for cell in column_totals %}<td>{{ cell.n }}</td>{% endfor %}
+          </tr>
+        </tbody>
       </table>
     </div>
+    <p class="stamp">Last updated {{ generated_at|date:"H:i" }}</p>
   </section>
 
   <section class="panel scale">
     <h3>HEATMAP SCALE</h3>
-    <p><i class="dot critical"></i>Critical</p>
-    <p><i class="dot high"></i>High</p>
-    <p><i class="dot medium"></i>Medium</p>
-    <p><i class="dot low"></i>Low — Ocean Blue</p>
-    <p><i class="dot safe"></i>Safe</p>
+    <p><i class="dot critical"></i><span>Critical<small>Extreme risk</small></span></p>
+    <p><i class="dot high"></i><span>High<small>High risk</small></span></p>
+    <p><i class="dot medium"></i><span>Medium<small>Medium risk</small></span></p>
+    <p><i class="dot low"></i><span>Low<small>Low risk — Ocean Blue</small></span></p>
+    <p><i class="dot safe"></i><span>Safe<small>Minimal risk</small></span></p>
   </section>
 </div>
 
-<div class="lower-grid">
+<section class="panel filters">
+  <b>SMART FILTERS</b>
+  <div>
+    {% for f in filters %}
+    <button type="button" class="{{ f.tone }}" data-filter="{{ f.key }}">
+      <i class="dot {{ f.tone }}"></i>{{ f.label }} ({{ f.count }})
+    </button>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="pipeline-grid">
+  <section class="panel pipeline">
+    <h2>INTELLIGENCE &amp; DECISION ENGINE PIPELINE</h2>
+    <div class="stages">
+      <article>
+        <h4>DATA INPUTS</h4>
+        <i aria-hidden="true">🗄</i>
+        <p>Campaign · Audience · Financial · Behaviour · Market · System · External</p>
+      </article>
+      <article>
+        <h4>CONFIDENCE ALGORITHM</h4>
+        <i aria-hidden="true">🧠</i>
+        <p>Scored on data quality, completeness, history and behaviour</p>
+        <b>{% if avg_confidence %}{{ avg_confidence }}%{% else %}—{% endif %}</b><small>current average</small>
+      </article>
+      <article>
+        <h4>CONFIDENCE DECAY</h4>
+        <svg class="decay" viewBox="0 0 90 46" aria-hidden="true">
+          <polyline class="axis" points="10,4 10,38 88,38"/>
+          <polyline class="curve" points="10,8 29,16 48,25 67,31 86,35"/>
+          <circle cx="10" cy="8" r="2"/><circle cx="29" cy="16" r="2"/><circle cx="48" cy="25" r="2"/><circle cx="67" cy="31" r="2"/><circle cx="86" cy="35" r="2"/>
+        </svg>
+        <p>Confidence decreases as data ages</p>
+      </article>
+      <article>
+        <h4>IMPACT FORECAST</h4>
+        <i aria-hidden="true">📈</i>
+        <p>Forecasts cost, revenue and risk per scenario</p>
+        <small>Horizon 7D · 30D · 90D</small>
+      </article>
+      <article>
+        <h4>OWNER INTENT</h4>
+        <i aria-hidden="true">🎓</i>
+        <p>Learns owner decisions and preferences to improve suggestions</p>
+        <b class="safe">{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</b><small>learning strength</small>
+      </article>
+      <article>
+        <h4>VISUAL STORY MODE</h4>
+        <i aria-hidden="true">📖</i>
+        <p>What happened · what changed · what matters · what to do</p>
+      </article>
+      <article>
+        <h4>DECISION CONFIDENCE MAP</h4>
+        <svg class="radar" viewBox="0 0 60 60" aria-hidden="true">
+          <polygon class="grid" points="30,4 52,20 44,50 16,50 8,20"/>
+          <polygon class="grid" points="30,15 43,25 38,42 22,42 17,25"/>
+          <polygon class="plot" points="30,10 47,23 40,46 19,44 12,23"/>
+        </svg>
+        <p>High · Medium · Low · Safe</p>
+      </article>
+      <article>
+        <h4>UNIFIED RISK SCORE</h4>
+        <div class="gauge" style="--pct:{{ risk_score|default:0 }}">
+          <b>{% if risk_score %}{{ risk_score }}{% else %}—{% endif %}</b><small>/100</small>
+        </div>
+        <p>{% if risk_score %}Risk level {% if risk_score >= 70 %}high{% elif risk_score >= 40 %}medium{% else %}low{% endif %}{% else %}No decisions scored yet{% endif %}</p>
+      </article>
+      <article>
+        <h4>IMPACT FORECAST TREND</h4>
+        <p><span class="tr safe">Revenue impact</span><span class="tr high">Cost impact</span><span class="tr critical">Risk impact</span></p>
+        <small>7D · 30D · 90D</small>
+      </article>
+    </div>
+  </section>
+
+  <aside class="panel summary">
+    <h2>ONE-LINE SUMMARY CARDS</h2>
+    {% for s in summary %}
+    <article class="{{ s.tone }}">
+      <b>{{ s.count }}</b>
+      <span><strong>{{ s.title }}</strong><small>{{ s.note }}</small></span>
+      <i class="dot {{ s.tone }}"></i>
+    </article>
+    {% endfor %}
+  </aside>
+</div>
+
+<div class="queue-grid">
   <section class="panel queue">
-    <h2>OWNER ATTENTION QUEUE<span class="count">{{ attention|length }} open</span></h2>
+    <h2>OWNER ATTENTION QUEUE<span class="count">{{ open_count }} open</span></h2>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Status</th><th>Category</th><th>Issue</th><th>Impact</th>
-            <th>Confidence</th><th>Source</th><th>Recommendation</th>
+            <th>Status</th><th>Category</th><th>Issue / opportunity</th><th>Impact</th>
+            <th>Confidence</th><th>Due in</th><th>Source</th><th>AI recommendation</th><th>Action</th>
           </tr>
         </thead>
         <tbody>
           {% for item in attention %}
-          <tr data-severity="{{ item.severity }}">
+          <tr data-severity="{{ item.severity }}" data-overdue="{% if item.is_overdue %}1{% else %}0{% endif %}">
             <td><span class="badge {{ item.severity }}">● {{ item.severity|title }}</span></td>
             <td>{{ item.category }}</td>
-            <td>{{ item.title }}</td>
-            <td class="num">{{ item.impact|default:'—' }}</td>
+            <td class="text"><span class="row-title">{{ item.title }}</span></td>
+            <td class="num {% if item.impact %}positive{% endif %}">{% if item.impact %}€ {{ item.impact|floatformat:0 }}{% else %}—{% endif %}</td>
             <td class="num"><div class="confidence"><span style="width:{{ item.confidence }}%"></span></div>{{ item.confidence }}%</td>
+            <td class="when">{% if item.due_at %}<time data-deadline="{{ item.due_at|date:'c' }}">--:--:--</time>{% else %}—{% endif %}</td>
             <td>{{ item.source }}</td>
             <td class="text">{{ item.recommendation }}</td>
+            <td class="actions"><a class="action {{ item.severity }}" href="{% url 'module' 'intelligence' %}">Review</a></td>
           </tr>
           {% empty %}
-          <tr><td class="empty" colspan="7"><b>Nothing needs your attention</b><span>Run the seed command to populate the command centre, or wait for the intelligence layer to raise an item.</span></td></tr>
+          <tr><td class="empty" colspan="9"><b>Nothing needs your attention</b><span>Items raised by the intelligence layer appear here with their impact, confidence and deadline.</span></td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    <p class="stamp"><i class="dot critical"></i>Items past their deadline are highlighted as overdue · {{ overdue }} currently overdue</p>
   </section>
 
   <aside class="panel insights">
     <h3>ATTENTION INSIGHTS</h3>
     <div>
-      <article>◷<span>Avg. Response Time<b>18m 26s</b></span></article>
-      <article>✓<span>Auto-Executed Safe<b>18</b></span></article>
-      <article>◎<span>AI Accuracy<b>92.6%</b></span></article>
+      <article><i aria-hidden="true">◷</i><span>Avg. confidence<b>{% if avg_confidence %}{{ avg_confidence }}%{% else %}—{% endif %}</b></span></article>
+      <article><i aria-hidden="true">⏰</i><span>Overdue items<b>{{ overdue }}</b></span></article>
+      <article><i aria-hidden="true">✓</i><span>Auto-executed safe<b>{{ cards.4.count }}</b></span></article>
+      <article><i aria-hidden="true">◎</i><span>AI decision accuracy<b>{% if decision_accuracy %}{{ decision_accuracy }}%{% else %}—{% endif %}</b></span></article>
     </div>
   </aside>
+</div>
+
+<div class="loop-grid">
+  <section class="panel loop">
+    <b>ACTION &amp; OUTCOME LOOP</b>
+    <div>
+      <span><i class="safe">▶</i>1. Action taken</span>
+      <em>→</em>
+      <span><i class="safe">✓</i>2. Actual result</span>
+      <em>→</em>
+      <span><i class="low">📊</i>3. Outcome analysis</span>
+      <em>→</em>
+      <span><i class="medium">🧠</i>4. Learning update</span>
+    </div>
+  </section>
+
+  <section class="panel shortcuts">
+    <b>QUICK SHORTCUTS</b>
+    <div>
+      <a href="{% url 'module' 'intelligence' %}">🗳 Approval Center</a>
+      <a href="{% url 'module' 'audit' %}">🔔 Alert Center</a>
+      <a href="{% url 'module' 'analytics' %}">📈 Report Center</a>
+      <a href="{% url 'whatsapp-center' %}">💬 Communication Center</a>
+      <a href="{% url 'automation-center' %}">⚙ Action Center</a>
+      <a href="{% url 'module' 'support' %}">🎧 Help Desk</a>
+    </div>
+  </section>
 </div>
 {% endblock %}

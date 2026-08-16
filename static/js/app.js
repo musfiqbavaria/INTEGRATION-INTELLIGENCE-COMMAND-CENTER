@@ -41,33 +41,71 @@
   /* Severity tabs filter the owner attention queue. They looked interactive
      but did nothing before; this makes the control honest. */
   function severityFilter() {
-    var tabs = document.querySelectorAll(".severity-tabs button[data-severity]");
+    var buttons = document.querySelectorAll("[data-filter]");
     var rows = document.querySelectorAll(".queue tbody tr[data-severity]");
-    if (!tabs.length || !rows.length) { return; }
+    if (!buttons.length || !rows.length) { return; }
 
     var active = "";
 
+    function matches(row) {
+      if (!active || active === "all") { return true; }
+      if (active === "overdue") { return row.getAttribute("data-overdue") === "1"; }
+      return row.getAttribute("data-severity") === active;
+    }
+
     function apply() {
       for (var i = 0; i < rows.length; i++) {
-        var match = !active || rows[i].getAttribute("data-severity") === active;
-        rows[i].hidden = !match;
+        rows[i].hidden = !matches(rows[i]);
       }
-      for (var j = 0; j < tabs.length; j++) {
-        tabs[j].setAttribute("aria-pressed", tabs[j].getAttribute("data-severity") === active ? "true" : "false");
+      for (var j = 0; j < buttons.length; j++) {
+        var value = buttons[j].getAttribute("data-filter");
+        var on = value === active || (active === "" && value === "all");
+        buttons[j].setAttribute("aria-pressed", on ? "true" : "false");
       }
     }
 
-    for (var k = 0; k < tabs.length; k++) {
-      tabs[k].setAttribute("aria-pressed", "false");
-      tabs[k].addEventListener("click", function (event) {
-        var value = event.currentTarget.getAttribute("data-severity");
-        active = active === value ? "" : value;
+    for (var k = 0; k < buttons.length; k++) {
+      buttons[k].addEventListener("click", function (event) {
+        var value = event.currentTarget.getAttribute("data-filter");
+        active = (active === value || value === "all") ? "" : value;
         apply();
       });
     }
+
+    apply();
+  }
+
+  /* Live "due in" counters on the owner attention queue. The deadline is
+     rendered server-side as an ISO timestamp; this only formats it. */
+  function countdowns() {
+    var cells = document.querySelectorAll("time[data-deadline]");
+    if (!cells.length) { return; }
+
+    function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+    function tick() {
+      var now = Date.now();
+      for (var i = 0; i < cells.length; i++) {
+        var due = new Date(cells[i].getAttribute("data-deadline")).getTime();
+        if (isNaN(due)) { continue; }
+        var remaining = due - now;
+        var overdue = remaining < 0;
+        var diff = Math.abs(remaining);
+        var hours = Math.floor(diff / 3600000);
+        var minutes = Math.floor((diff % 3600000) / 60000);
+        var seconds = Math.floor((diff % 60000) / 1000);
+        cells[i].textContent = (overdue ? "−" : "") + pad(hours) + ":" + pad(minutes) + ":" + pad(seconds);
+        cells[i].classList.toggle("overdue", overdue);
+        cells[i].title = overdue ? "Overdue" : "Time remaining";
+      }
+    }
+
+    tick();
+    setInterval(tick, 1000);
   }
 
   markActiveNav();
   confirmDestructive();
   severityFilter();
+  countdowns();
 })();
