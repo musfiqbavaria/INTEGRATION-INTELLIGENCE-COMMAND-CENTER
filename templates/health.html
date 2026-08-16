@@ -1,0 +1,40 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>CONNECTION HEALTH</h1>
+    <p>Secrets remain server-side and are never displayed</p>
+  </div>
+</header>
+
+<div class="module-page">
+  <section class="module-kpis">
+    <article>
+      <small>DATABASE</small>
+      <b>PostgreSQL</b>
+      <small>Runs a read query against the live database.</small>
+      <form method="post">{% csrf_token %}<button name="kind" value="database" class="primary">Test database</button></form>
+    </article>
+    <article>
+      <small>EMAIL</small>
+      <b>SMTP relay</b>
+      <small>Sends a verification message to the owner address.</small>
+      <form method="post">{% csrf_token %}
+        <button name="kind" value="smtp" class="primary"
+                data-confirm="Send a verification email now? This uses the live SMTP relay.">Send verification</button>
+      </form>
+    </article>
+    <article>
+      <small>WHATSAPP</small>
+      <b>Meta Cloud API</b>
+      <small>Checks the configured phone number with Meta.</small>
+      <form method="post">{% csrf_token %}<button name="kind" value="whatsapp" class="primary">Test connection</button></form>
+    </article>
+    <article>
+      <small>ARTIFICIAL INTELLIGENCE</small>
+      <b>OpenAI</b>
+      <small>Makes one minimal request to confirm the key and model.</small>
+      <form method="post">{% csrf_token %}<button name="kind" value="openai" class="primary">Test intelligence</button></form>
+    </article>
+  </section>
+</div>
+{% endblock %}

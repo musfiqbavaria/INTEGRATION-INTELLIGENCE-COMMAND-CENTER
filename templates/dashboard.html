@@ -1,0 +1,112 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>INTEGRATION &amp; INTELLIGENCE COMMAND CENTER</h1>
+    <p>Connect • Automate • Integrate • Intelligence • Grow</p>
+  </div>
+  <div class="header-tools">
+    <a class="primary" href="{% url 'orchestrator' %}">🤖 AI Assistant</a>
+    <div class="owner">◉
+      <span>
+        <small>Owner</small>
+        <b>{{ request.user.get_full_name|default:request.user.username }}</b>
+        <small>Python 3.14.3</small>
+      </span>
+    </div>
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button>Logout</button></form>
+  </div>
+</header>
+
+<section class="kpis">
+  <article><small>TOTAL REVENUE</small><strong>€ {{ revenue|floatformat:0 }}</strong><span>Live ledger</span></article>
+  <article><small>TOTAL PROFIT</small><strong>€ {{ profit|floatformat:0 }}</strong><span>Net contribution</span></article>
+  <article><small>TOTAL LEADS</small><strong>{{ leads }}</strong><span>Database-backed</span></article>
+  <article><small>OWNER DECISIONS</small><strong>{{ decisions }}</strong><span>Pending review</span></article>
+  <article><small>ACTIVE AUTOMATIONS</small><strong>26</strong><span>Celery running</span></article>
+  <article><small>WHATSAPP</small><strong>24,850</strong><span>Cloud API ready</span></article>
+  <article><small>ONE-MAN-TEAM MODE</small><strong>98%</strong><span>Excellent</span></article>
+</section>
+
+<div class="upper-grid">
+  <section class="panel attention">
+    <h2>OWNER ATTENTION – INTELLIGENCE LAYER</h2>
+
+    <div class="severity-tabs">
+      <button type="button" class="critical" data-severity="critical"><i aria-hidden="true">!</i>Critical</button>
+      <button type="button" class="high" data-severity="high"><i aria-hidden="true">▲</i>High</button>
+      <button type="button" class="medium" data-severity="medium"><i aria-hidden="true">♦</i>Medium</button>
+      <button type="button" class="low" data-severity="low"><i aria-hidden="true">●</i>Low<small>(Ocean Blue)</small></button>
+      <button type="button" class="safe" data-severity="safe"><i aria-hidden="true">♟</i>Safe</button>
+    </div>
+
+    <div class="attention-cards">
+      <article class="critical"><h3><i aria-hidden="true">♢</i>HIGH-RISK DECISIONS</h3><p>Immediate owner approval with high impact or risk.</p><b>5</b></article>
+      <article class="high"><h3><i aria-hidden="true">◎</i>HIGH-IMPACT OPPORTUNITIES</h3><p>Opportunities with positive ROI.</p><b>8</b></article>
+      <article class="conflict"><h3><i aria-hidden="true">⚯</i>AI ENGINE CONFLICTS</h3><p>Conflicts between evidence and outcomes.</p><b>3</b></article>
+      <article class="low"><h3><i aria-hidden="true">?</i>LOW-CONFIDENCE</h3><p>Incomplete data needs owner review.</p><b>7</b></article>
+      <article class="safe"><h3><i aria-hidden="true">⚖</i>GOVERNANCE ALERTS</h3><p>Policy, GDPR and ethical controls.</p><b>4</b></article>
+    </div>
+  </section>
+
+  <section class="panel heatmap">
+    <h2>RISK / IMPACT HEATMAP</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Impact</th><th>Low</th><th>Medium</th><th>High</th><th>Critical</th></tr>
+        <tr><th>Very High</th><td class="hm-0">0</td><td class="hm-2">3</td><td class="hm-4">7</td><td class="hm-5">5</td></tr>
+        <tr><th>High</th><td class="hm-1">1</td><td class="hm-3">8</td><td class="hm-5">10</td><td class="hm-4">6</td></tr>
+        <tr><th>Medium</th><td class="hm-1">2</td><td class="hm-3">6</td><td class="hm-4">9</td><td class="hm-2">2</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel scale">
+    <h3>HEATMAP SCALE</h3>
+    <p><i class="dot critical"></i>Critical</p>
+    <p><i class="dot high"></i>High</p>
+    <p><i class="dot medium"></i>Medium</p>
+    <p><i class="dot low"></i>Low — Ocean Blue</p>
+    <p><i class="dot safe"></i>Safe</p>
+  </section>
+</div>
+
+<div class="lower-grid">
+  <section class="panel queue">
+    <h2>OWNER ATTENTION QUEUE<span class="count">{{ attention|length }} open</span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th><th>Category</th><th>Issue</th><th>Impact</th>
+            <th>Confidence</th><th>Source</th><th>Recommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in attention %}
+          <tr data-severity="{{ item.severity }}">
+            <td><span class="badge {{ item.severity }}">● {{ item.severity|title }}</span></td>
+            <td>{{ item.category }}</td>
+            <td>{{ item.title }}</td>
+            <td class="num">{{ item.impact|default:'—' }}</td>
+            <td class="num"><div class="confidence"><span style="width:{{ item.confidence }}%"></span></div>{{ item.confidence }}%</td>
+            <td>{{ item.source }}</td>
+            <td class="text">{{ item.recommendation }}</td>
+          </tr>
+          {% empty %}
+          <tr><td class="empty" colspan="7"><b>Nothing needs your attention</b><span>Run the seed command to populate the command centre, or wait for the intelligence layer to raise an item.</span></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="panel insights">
+    <h3>ATTENTION INSIGHTS</h3>
+    <div>
+      <article>◷<span>Avg. Response Time<b>18m 26s</b></span></article>
+      <article>✓<span>Auto-Executed Safe<b>18</b></span></article>
+      <article>◎<span>AI Accuracy<b>92.6%</b></span></article>
+    </div>
+  </aside>
+</div>
+{% endblock %}

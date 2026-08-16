@@ -1,0 +1,53 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>LIVE AI ORCHESTRATOR</h1>
+    <p>Structured outputs • confidence • risk • governance • owner approval</p>
+  </div>
+</header>
+
+<div class="module-page">
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Request a governed recommendation</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        <label><span>AI engine</span>
+          <select name="engine">
+            <option>AI Content Generator</option>
+            <option>AEO Answer Engine</option>
+            <option>Campaign Recommendation Engine</option>
+            <option>Predictive Customer Behaviour</option>
+            <option>AI-Predictive ROI</option>
+            <option>Customer Retention Predictor</option>
+            <option>Market Trend Analyzer</option>
+          </select>
+        </label>
+        <label>
+          <span>Business request<span class="req" title="Required">*</span></span>
+          <textarea name="prompt" rows="9" required placeholder="Describe the decision you need support with, including the market and any constraints."></textarea>
+          <span class="hint">Every recommendation is recorded with its confidence and risk score, and waits for your approval.</span>
+        </label>
+        <button class="primary">Generate recommendation</button>
+      </form>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Recent decisions<span class="count">{{ decisions|length }}</span></h2>
+      {% for item in decisions %}
+      <article>
+        <span>
+          <b>{{ item.decision_id }}</b>
+          <small>{{ item.title }}</small>
+          <small>Confidence {{ item.confidence }}% · Risk {{ item.risk_score }}</small>
+        </span>
+        <span class="badge {{ item.status }}">{{ item.status|title }}</span>
+      </article>
+      {% empty %}
+      <div class="empty"><b>No decisions yet</b><span>Recommendations you generate appear here for review.</span></div>
+      {% endfor %}
+    </aside>
+
+  </div>
+</div>
+{% endblock %}

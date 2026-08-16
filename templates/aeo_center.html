@@ -1,0 +1,69 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>AI OPTIMIZED MARKETING (AEO)</h1>
+    <p>Answer generation · citations · schema · owner review · publishing</p>
+  </div>
+</header>
+
+<div class="module-page">
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Answer library<span class="count">{{ entries|length }} answers</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Question &amp; answer</th><th>Authority</th><th>Schema</th><th>Citations</th><th class="actions">Governance</th></tr>
+          </thead>
+          <tbody>
+            {% for e in entries %}
+            <tr>
+              <td class="text"><span class="row-title">{{ e.question }}</span><span class="row-sub">{{ e.answer }}</span></td>
+              <td class="num">{{ e.authority_score }}%</td>
+              <td>{{ e.schema_type }}<span class="row-sub">{{ e.language }} · {{ e.market }}</span></td>
+              <td class="text">{% for c in e.citations %}{{ c }}<br>{% empty %}—{% endfor %}</td>
+              <td class="actions">
+                <span class="badge {{ e.status }}">{{ e.status|title }}</span>
+                {% if e.status == 'review' %}
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="id" value="{{ e.id }}">
+                  <button class="primary" name="action" value="publish"
+                          data-confirm="Publish this answer? It becomes the public answer for this question.">Approve &amp; publish</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="5"><b>No answers yet</b><span>Write a governed answer, or generate one with live AI and review it before publishing.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Create governed answer</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        <label><span>Question<span class="req" title="Required">*</span></span><textarea name="question" rows="3" required></textarea></label>
+        <label><span>Answer</span><textarea name="answer" rows="5"></textarea><span class="hint">Leave blank and use “Generate with live AI” to draft it.</span></label>
+        <label><span>Topic</span><input name="topic" value="Company information"></label>
+        <label><span>Market</span><input name="market" value="Ireland"></label>
+        <label><span>Language</span><input name="language" value="en-IE"></label>
+        <label><span>Schema type</span>
+          <select name="schema_type">
+            <option>FAQPage</option>
+            <option>Organization</option>
+            <option>Product</option>
+            <option>HowTo</option>
+          </select>
+        </label>
+        <label><span>Citations</span><textarea name="citations" rows="3"></textarea><span class="hint">One URL per line.</span></label>
+        <button class="primary" name="action" value="create">Save for review</button>
+        <button class="action" name="action" value="generate">Generate with live AI</button>
+      </form>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}

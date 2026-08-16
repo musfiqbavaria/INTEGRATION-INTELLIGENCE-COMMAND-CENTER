@@ -1,0 +1,87 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>WHATSAPP BUSINESS CENTER</h1>
+    <p>Meta Cloud API · approved templates · webhook delivery tracking</p>
+  </div>
+  <div class="header-tools">
+    <a class="primary" href="{% url 'integration-health' %}">Connection health</a>
+  </div>
+</header>
+
+<div class="module-page">
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Templates<span class="count">{{ templates|length }} total</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Name</th><th>Category</th><th>Status</th><th>Metrics</th><th class="actions">Send</th></tr>
+          </thead>
+          <tbody>
+            {% for t in templates %}
+            <tr>
+              <td class="text"><span class="row-title">{{ t.name }}</span><span class="row-sub">{{ t.body }}</span></td>
+              <td>{{ t.category|title }}<span class="row-sub">{{ t.language }}</span></td>
+              <td class="status"><span class="badge {{ t.status }}">{{ t.status|title }}</span></td>
+              <td class="num">{{ t.sent }} sent · {{ t.delivered }} delivered<span class="row-sub">{{ t.read_count }} read · {{ t.replies }} replies</span></td>
+              <td class="actions">
+                {% if t.status == 'approved' %}
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="action" value="send">
+                  <input type="hidden" name="template_id" value="{{ t.id }}">
+                  <input name="recipient" placeholder="353899788187" aria-label="Recipient number" required>
+                  <button class="primary" data-confirm="Send the &quot;{{ t.name }}&quot; template through the Meta Cloud API?">Send</button>
+                </form>
+                {% else %}<span class="badge">Awaiting Meta approval</span>{% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="5"><b>No templates yet</b><span>Draft a template here, then submit it in Meta Business Manager for approval before sending.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Message activity<span class="count">last {{ deliveries|length }}</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Recipient</th><th>Template</th><th>Status</th><th>External ID</th></tr></thead>
+          <tbody>
+            {% for d in deliveries %}
+            <tr>
+              <td>{{ d.recipient }}</td>
+              <td>{{ d.template }}</td>
+              <td class="status"><span class="badge {{ d.status }}">{{ d.status|title }}</span></td>
+              <td class="id">{{ d.external_id|default:'—' }}</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="4"><b>No messages sent yet</b><span>Sent templates and their Meta message IDs appear here.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Create template draft</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        <input type="hidden" name="action" value="create">
+        <label><span>Name<span class="req" title="Required">*</span></span><input name="name" required><span class="hint">Lowercase with underscores, matching the name registered with Meta.</span></label>
+        <label><span>Category</span>
+          <select name="category">
+            <option>marketing</option>
+            <option>utility</option>
+            <option>authentication</option>
+          </select>
+        </label>
+        <label><span>Language</span><input name="language" value="en_IE"></label>
+        <label><span>Body<span class="req" title="Required">*</span></span><textarea name="body" rows="8" required></textarea></label>
+        <button class="primary">Save for approval</button>
+      </form>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}

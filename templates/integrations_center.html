@@ -1,0 +1,53 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>INTEGRATION CONTROL CENTER</h1>
+    <p>Encrypted environment configuration · deliberate health checks · no secrets displayed</p>
+  </div>
+</header>
+
+<div class="module-page">
+
+  <section class="module-kpis">
+    {% for i in integrations %}
+    <article>
+      <small>{{ i.category|upper }}</small>
+      <b>{{ i.name }}</b>
+      <span class="badge {{ i.status }}">{{ i.status|title }}</span>
+      <small>{{ i.provider }}</small>
+      {% if i.last_error %}<div class="notice error">{{ i.last_error }}</div>{% endif %}
+      <form method="post">{% csrf_token %}
+        <button class="primary" name="service"
+                value="{% if i.category == 'Email' %}smtp{% elif i.category == 'WhatsApp' %}whatsapp{% elif i.category == 'AI' %}openai{% else %}database{% endif %}"
+                {% if i.category == 'Email' %}data-confirm="Send a verification email now? This uses the live SMTP relay."{% endif %}>Test connection</button>
+      </form>
+    </article>
+    {% empty %}
+    <article><b>No integrations configured</b><small>Run the seed command to register the database, email, WhatsApp and AI connections.</small></article>
+    {% endfor %}
+  </section>
+
+  <section class="panel">
+    <h2>Connection audit<span class="count">last {{ checks|length }}</span></h2>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Service</th><th>Status</th><th>Latency</th><th>Message</th><th>Checked</th></tr></thead>
+        <tbody>
+          {% for c in checks %}
+          <tr>
+            <td>{{ c.service }}</td>
+            <td class="status"><span class="badge {{ c.status }}">{{ c.status|title }}</span></td>
+            <td class="num">{{ c.latency_ms }} ms</td>
+            <td class="text">{{ c.message }}</td>
+            <td class="when">{{ c.checked_at }}</td>
+          </tr>
+          {% empty %}
+          <tr><td class="empty" colspan="5"><b>No checks recorded yet</b><span>Every connection test is logged here with its latency and result.</span></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

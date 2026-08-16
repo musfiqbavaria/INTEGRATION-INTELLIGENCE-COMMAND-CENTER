@@ -1,0 +1,73 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>{{ title|default:'Integration & Intelligence Command Center' }} — Emerald Rozalia Limited</title>
+<link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="app-shell">
+
+  <aside class="sidebar">
+    <a href="{% url 'dashboard' %}" class="brand">
+      <img src="{% static 'images/emerald-rozalia-limited-logo.png' %}" alt="Emerald Rozalia Limited" width="168" height="46">
+      <span>MARKETING ERP · PYTHON</span>
+    </a>
+
+    <div class="side-title">MAIN NAVIGATION</div>
+    <nav class="nav" aria-label="Main">
+      <a href="{% url 'dashboard' %}"><i aria-hidden="true">⌂</i>Dashboard</a>
+      <a href="{% url 'command-center' %}"><i aria-hidden="true">⌘</i>Command Center</a>
+      <a href="{% url 'module' 'leads' %}"><i aria-hidden="true">♟</i>Leads &amp; Customers</a>
+      <a href="{% url 'module' 'campaigns' %}"><i aria-hidden="true">⚑</i>Campaigns</a>
+      <a href="{% url 'module' 'content' %}"><i aria-hidden="true">✎</i>Content Center</a>
+      <a href="{% url 'email-center' %}"><i aria-hidden="true">✉</i>Email Marketing</a>
+      <a href="{% url 'aeo-center' %}"><i aria-hidden="true">◎</i>AI Optimized Marketing (AEO)</a>
+      <a href="{% url 'automation-center' %}"><i aria-hidden="true">⚙</i>Automation &amp; Workflows</a>
+      <a href="{% url 'integrations-center' %}"><i aria-hidden="true">⌘</i>Integration Center</a>
+      <a href="{% url 'module' 'analytics' %}"><i aria-hidden="true">⌁</i>Analytics &amp; Reports</a>
+      <a href="{% url 'module' 'intelligence' %}"><i aria-hidden="true">◉</i>AI Intelligence Suite</a>
+      <a href="{% url 'module' 'finance' %}"><i aria-hidden="true">€</i>Finance &amp; Profitability</a>
+      <a href="{% url 'whatsapp-center' %}"><i aria-hidden="true">◈</i>WhatsApp Center</a>
+      <a href="{% url 'module' 'settings' %}"><i aria-hidden="true">⚙</i>Settings &amp; Preferences</a>
+      <a href="{% url 'module' 'users' %}"><i aria-hidden="true">♙</i>User &amp; Permissions</a>
+      <a href="{% url 'module' 'audit' %}"><i aria-hidden="true">▤</i>Audit Logs</a>
+      <a href="{% url 'module' 'support' %}"><i aria-hidden="true">?</i>Help Desk &amp; Support</a>
+    </nav>
+
+    <div class="side-title quick-label">QUICK ACTIONS</div>
+    <div class="quick-actions">
+      <a href="{% url 'orchestrator' %}">♙ AI Assistant</a>
+      <a href="{% url 'integration-health' %}">⌘ Connection Health</a>
+    </div>
+
+    <div class="support">
+      <b>◉ Need help?</b>
+      <small>Owner Support Center</small>
+      <a href="{% url 'module' 'support' %}">Open support →</a>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    {% if messages %}{% for message in messages %}<div class="notice {{ message.tags }}" role="status">{{ message }}</div>{% endfor %}{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<footer>
+  <div>EMERALD ROZALIA LIMITED<small>Python Marketing ERP Command Center</small></div>
+  <span>♢ Secure &amp; Encrypted</span>
+  <span>♙ Zero Trust Architecture</span>
+  <span>◴ Audit Logged</span>
+  <span>⚖ AI Responsible &amp; Ethical</span>
+  <a href="tel:0899788187">☎ 089 978 8187</a>
+  <span>📍 Limerick, Ireland</span>
+</footer>
+
+<script src="{% static 'js/app.js' %}" defer></script>
+</body>
+</html>

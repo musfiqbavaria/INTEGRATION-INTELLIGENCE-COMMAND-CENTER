@@ -1,0 +1,36 @@
+# Secrets — never commit. .env holds the live SMTP password, OpenAI key and
+# WhatsApp verify token. Only .env.example belongs in the repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.ppk
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Django
+staticfiles/
+media/
+*.sqlite3
+
+# Celery (filesystem broker + beat scheduler artifacts)
+control/
+celerybeat-schedule*
+*.exchange
+*.pidbox
+
+# Database backups
+backups/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

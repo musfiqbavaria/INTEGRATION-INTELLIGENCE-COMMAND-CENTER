@@ -1,0 +1,96 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar module-head">
+  <div>
+    <h1>{{ title|upper }}</h1>
+    <p>Database-backed operations · owner controlled</p>
+  </div>
+  <div class="header-tools">
+    <a class="primary" href="{% url 'integration-health' %}">Connection health</a>
+  </div>
+</header>
+
+<div class="module-page">
+
+  {% if totals %}
+  <section class="module-kpis">
+    <article><small>TOTAL REVENUE</small><b>€ {{ totals.revenue|floatformat:0 }}</b><span>All markets</span></article>
+    <article><small>TOTAL COST</small><b>€ {{ totals.cost|floatformat:0 }}</b><span>Recorded spend</span></article>
+    <article><small>NET PROFIT</small><b>€ {{ totals.profit|floatformat:0 }}</b><span>{{ totals.margin }}% margin</span></article>
+    <article><small>LEADS / CUSTOMERS</small><b>{{ totals.leads }} / {{ totals.customers }}</b><span>Attributed</span></article>
+  </section>
+  {% endif %}
+
+  <div class="module-grid{% if not fields %} single{% endif %}">
+
+    <section class="panel">
+      <h2>{{ title }}<span class="count">{{ shown_count }} of {{ total_count }}</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ref</th>
+              {% for column in columns %}<th>{{ column|title }}</th>{% endfor %}
+              {% if not readonly %}<th class="actions">Actions</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              <td class="id">#{{ row.pk }}</td>
+              {% for cell in row.cells %}
+              <td class="{{ cell.kind }}">
+                {% if cell.kind == 'status' %}<span class="badge {{ cell.value|lower }}">{{ cell.value }}</span>{% else %}{{ cell.value }}{% endif %}
+              </td>
+              {% endfor %}
+              {% if not readonly %}
+              <td class="actions">
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="id" value="{{ row.pk }}">
+                  <button class="action critical" name="action" value="delete"
+                          data-confirm="Delete record #{{ row.pk }}? This cannot be undone.">Delete</button>
+                </form>
+              </td>
+              {% endif %}
+            </tr>
+            {% empty %}
+            <tr>
+              <td class="empty" colspan="99">
+                <b>No records yet</b>
+                <span>{% if readonly %}Financial records appear here once campaigns start reporting revenue.{% else %}Use the form beside this table to add the first record.{% endif %}</span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {% if fields %}
+    <aside class="panel module-side">
+      <h2>Create record</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        {% for field in fields %}
+        <label>
+          <span>{{ field.verbose_name|title }}{% if not field.blank %}<span class="req" title="Required">*</span>{% endif %}</span>
+          {% if field.get_internal_type == 'TextField' %}
+            <textarea name="{{ field.name }}" rows="4"></textarea>
+          {% elif field.get_internal_type == 'JSONField' %}
+            <textarea name="{{ field.name }}" rows="3" placeholder="One value per comma"></textarea>
+            <span class="hint">Separate multiple values with commas.</span>
+          {% elif field.get_internal_type == 'DateTimeField' %}
+            <input name="{{ field.name }}" placeholder="YYYY-MM-DD HH:MM"{% if not field.blank %} required{% endif %}>
+          {% elif field.get_internal_type == 'DateField' %}
+            <input name="{{ field.name }}" placeholder="YYYY-MM-DD"{% if not field.blank %} required{% endif %}>
+          {% else %}
+            <input name="{{ field.name }}"{% if not field.blank %} required{% endif %}>
+          {% endif %}
+        </label>
+        {% endfor %}
+        <button class="primary">Save record</button>
+      </form>
+    </aside>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}

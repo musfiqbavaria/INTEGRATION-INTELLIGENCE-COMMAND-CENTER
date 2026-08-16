@@ -1,0 +1,88 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>EMAIL MARKETING OPERATIONS</h1>
+    <p>Consent-controlled · SMTP queued delivery · performance tracking</p>
+  </div>
+  <div class="header-tools">
+    <div class="owner">✓<span><small>Audience</small><b>{{ consented }} consented</b></span></div>
+  </div>
+</header>
+
+<div class="module-page">
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Campaigns<span class="count">{{ campaigns|length }} total</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Campaign</th><th>Status</th><th>Audience</th><th>Performance</th><th class="actions">Actions</th></tr>
+          </thead>
+          <tbody>
+            {% for c in campaigns %}
+            <tr>
+              <td class="text">
+                <span class="row-title">{{ c.name }}</span>
+                <span class="row-sub">{{ c.subject }}</span>
+                {% if c.preview_text %}<span class="row-sub">{{ c.preview_text }}</span>{% endif %}
+              </td>
+              <td class="status"><span class="badge {{ c.status }}">{{ c.status|title }}</span></td>
+              <td>{{ c.segment }}<span class="row-sub">{{ c.recipients }} recipients</span></td>
+              <td class="num">{{ c.opens }} opens · {{ c.clicks }} clicks<span class="row-sub">{{ c.failures }} failed</span></td>
+              <td class="actions">
+                {% if c.status == 'draft' or c.status == 'failed' %}
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="id" value="{{ c.id }}">
+                  <button class="primary" name="action" value="send"
+                          data-confirm="Send &quot;{{ c.name }}&quot; to {{ consented }} consented recipients? Delivery cannot be recalled.">Send through SMTP</button>
+                  <button class="action critical" name="action" value="delete"
+                          data-confirm="Delete the draft &quot;{{ c.name }}&quot;? This cannot be undone.">Delete draft</button>
+                </form>
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="5"><b>No campaigns yet</b><span>Create a draft with the form beside this table, then send it once you are happy with the content.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Delivery log<span class="count">last {{ deliveries|length }}</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Recipient</th><th>Campaign</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody>
+            {% for d in deliveries %}
+            <tr>
+              <td>{{ d.recipient }}</td>
+              <td>{{ d.template }}</td>
+              <td class="status"><span class="badge {{ d.status }}">{{ d.status|title }}</span></td>
+              <td class="when">{{ d.updated_at }}</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="4"><b>Nothing sent yet</b><span>Every delivery attempt is recorded here with its result.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Create campaign</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        <input type="hidden" name="action" value="create">
+        <label><span>Name<span class="req" title="Required">*</span></span><input name="name" required></label>
+        <label><span>Subject<span class="req" title="Required">*</span></span><input name="subject" required></label>
+        <label><span>Preview text</span><input name="preview_text"><span class="hint">Shown after the subject in most inboxes.</span></label>
+        <label><span>HTML content<span class="req" title="Required">*</span></span><textarea name="content" rows="10" required></textarea></label>
+        <label><span>Segment</span><input name="segment" value="Consented leads"></label>
+        <button class="primary">Save draft</button>
+      </form>
+      <div class="notice">Delivery metrics are system-generated and cannot be edited by hand.</div>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}

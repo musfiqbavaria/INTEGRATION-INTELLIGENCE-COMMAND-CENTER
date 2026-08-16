@@ -1,0 +1,38 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports: ["127.0.0.1:8080:8000"]
+    volumes: ["media:/app/media"]
+    healthcheck: {test: ["CMD","curl","-fsS","http://localhost:8000/up"], interval: 30s, timeout: 5s, retries: 5}
+  worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A config worker -l INFO --concurrency=2
+    env_file: .env
+    depends_on: [postgres,redis]
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: celery -A config beat -l INFO --schedule=/tmp/celerybeat-schedule
+    env_file: .env
+    depends_on: [postgres,redis]
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment: {POSTGRES_DB: "${POSTGRES_DB}", POSTGRES_USER: "${POSTGRES_USER}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"}
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck: {test: ["CMD-SHELL","pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"], interval: 10s, timeout: 5s, retries: 10}
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
+    volumes: ["redis_data:/data"]
+    healthcheck: {test: ["CMD-SHELL","redis-cli -a $$REDIS_PASSWORD ping | grep PONG"], interval: 10s, timeout: 5s, retries: 10}
+volumes: {postgres_data: {}, redis_data: {}, media: {}}
+

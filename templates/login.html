@@ -1,0 +1,31 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Owner sign in — Emerald Rozalia Limited</title>
+<link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+<main class="login-wrap panel">
+  <img src="{% static 'images/emerald-rozalia-limited-logo.png' %}" alt="Emerald Rozalia Limited" width="240" height="74">
+  <h1>MARKETING ERP</h1>
+  <p>Secure owner access · Python 3.14.3</p>
+
+  {% for message in messages %}<div class="notice {{ message.tags }}" role="alert">{{ message }}</div>{% endfor %}
+
+  <form method="post">{% csrf_token %}
+    <label>
+      <span>Email</span>
+      <input type="email" name="email" value="urmos@rozalia.ie" autocomplete="username" autofocus required>
+    </label>
+    <label>
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button class="primary">Sign in securely</button>
+  </form>
+</main>
+</body>
+</html>

@@ -1,0 +1,82 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar">
+  <div>
+    <h1>AUTOMATION &amp; WORKFLOWS</h1>
+    <p>Triggers · conditions · governed actions · retries · execution logs</p>
+  </div>
+</header>
+
+<div class="module-page">
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Workflow builder<span class="count">{{ automations|length }} workflows</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Workflow</th><th>Logic</th><th>Health</th><th class="actions">Controls</th></tr>
+          </thead>
+          <tbody>
+            {% for a in automations %}
+            <tr>
+              <td><span class="row-title">{{ a.name }}</span><span class="row-sub"><span class="badge {{ a.status }}">{{ a.status|title }}</span></span></td>
+              <td class="text">
+                <span class="row-sub"><b>WHEN</b> {{ a.trigger }}</span>
+                <span class="row-sub"><b>IF</b> {{ a.conditions|join:', '|default:'—' }}</span>
+                <span class="row-sub"><b>THEN</b> {{ a.actions|join:', '|default:'—' }}</span>
+              </td>
+              <td class="num">{{ a.successes }}/{{ a.runs }} successful<span class="row-sub">{{ a.failures }} failures · {{ a.last_run_at|default:'never run' }}</span></td>
+              <td class="actions">
+                <form method="post">{% csrf_token %}
+                  <input type="hidden" name="id" value="{{ a.id }}">
+                  <button class="action" name="action" value="run">Run test</button>
+                  {% if a.status == 'active' %}
+                  <button class="action" name="action" value="pause">Pause</button>
+                  {% else %}
+                  <button class="primary" name="action" value="activate">Activate</button>
+                  {% endif %}
+                </form>
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="4"><b>No workflows yet</b><span>Describe a trigger and the actions it should run. New workflows start paused so you can review them first.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Execution logs<span class="count">last {{ runs|length }}</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Workflow</th><th>Status</th><th>Actions completed</th><th>Started</th></tr></thead>
+          <tbody>
+            {% for r in runs %}
+            <tr>
+              <td>{{ r.automation.name }}</td>
+              <td class="status"><span class="badge {{ r.status }}">{{ r.status|title }}</span></td>
+              <td class="text">{{ r.actions_completed|join:', '|default:'—' }}</td>
+              <td class="when">{{ r.started_at }}</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="4"><b>No runs recorded</b><span>Use “Run test” on a workflow to queue it through Celery and record the result here.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Create workflow</h2>
+      <form method="post" class="stack-form">{% csrf_token %}
+        <input type="hidden" name="action" value="create">
+        <label><span>Name<span class="req" title="Required">*</span></span><input name="name" required></label>
+        <label><span>Trigger<span class="req" title="Required">*</span></span><input name="trigger" required><span class="hint">The event that starts this workflow.</span></label>
+        <label><span>Conditions</span><textarea name="conditions" rows="3"></textarea><span class="hint">One condition per line. All must pass.</span></label>
+        <label><span>Actions<span class="req" title="Required">*</span></span><textarea name="actions" rows="4" required></textarea><span class="hint">One action per line, run in order.</span></label>
+        <button class="primary">Save paused workflow</button>
+      </form>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}
