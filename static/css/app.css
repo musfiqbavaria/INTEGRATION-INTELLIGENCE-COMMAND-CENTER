@@ -1705,5 +1705,57 @@ footer a:hover { color: var(--green); }
 .toolbar code { font-family: var(--font-data); color: var(--green); }
 .toolbar a.action { display: inline-flex; align-items: center; gap: 5px; }
 
+/* Entity switcher ---------------------------------------------------------
+   Only rendered once a second organisation exists, so it never takes sidebar
+   space it has not earned. */
+.org-switch { display: grid; gap: var(--s1); padding: 0 var(--s1); }
+
+.org-switch select {
+  width: 100%;
+  padding: 7px var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text);
+  font: 400 var(--t-sm)/1.3 var(--font-ui);
+}
+
+.org-switch select:focus { outline: none; border-color: var(--accent-edge); box-shadow: var(--ring); }
+.org-switch button { width: 100%; }
+
+/* Revenue centre ----------------------------------------------------------- */
+.forecast {
+  display: grid;
+  justify-items: start;
+  gap: var(--s1);
+  margin: 0 var(--s3) var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+}
+
+.forecast b { font-family: var(--font-data); font-size: var(--t-3xl); line-height: 1; letter-spacing: -.02em; }
+.forecast small { color: var(--muted); font-size: var(--t-xs); }
+
+/* Signed action page ------------------------------------------------------- */
+.action-record {
+  margin: 0;
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--panel3);
+  font-size: var(--t-sm);
+  text-align: left;
+}
+
+.login-wrap .back-link { color: var(--muted); font-size: var(--t-sm); text-decoration: none; }
+.login-wrap .back-link:hover { color: var(--text); text-decoration: underline; }
+
+/* Statuses introduced by attribution and engagement */
+.badge.attributed, .badge.last-touch { color: var(--green); }
+.badge.unattributed { color: var(--muted); }
+.badge.opened { color: var(--blue); }
+.badge.clicked { color: var(--green); }
+
 /* Executive dashboard: deliberately distinct from the operational Command Center. */
 .executive-page{display:grid;gap:18px}.executive-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.executive-kpis{margin-bottom:0}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.summary-grid article{border:1px solid var(--line,#20323a);border-radius:10px;padding:14px;display:grid;gap:5px}.summary-grid article b{font-size:24px}.summary-grid article small,.summary-grid article span{opacity:.72}.attention-row{padding:13px 0;border-bottom:1px solid var(--line,#20323a);display:grid;gap:5px}.attention-row:last-child{border-bottom:0}.attention-row span{opacity:.7;font-size:12px}.reconciliation .notice{margin:10px 0}@media(max-width:1050px){.executive-grid{grid-template-columns:1fr}}@media(max-width:700px){.summary-grid{grid-template-columns:1fr}}

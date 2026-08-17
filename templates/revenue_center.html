@@ -1,0 +1,162 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar module-head">
+  <div>
+    <h1>REVENUE &amp; ATTRIBUTION</h1>
+    <p>Last-touch attribution · cohorts · lifetime value · forecast</p>
+  </div>
+  <div class="header-tools">
+    <a class="primary" href="{% url 'module' 'conversions' %}">Record a conversion</a>
+  </div>
+</header>
+
+<div class="module-page">
+
+  <section class="module-kpis">
+    <article>
+      <small>LIFETIME VALUE</small>
+      <b>{% if ltv.ltv %}€ {{ ltv.ltv|floatformat:0 }}{% else %}—{% endif %}</b>
+      <span>{{ ltv.customers }} paying customer{{ ltv.customers|pluralize }}</span>
+    </article>
+    <article>
+      <small>VALUE PER LEAD</small>
+      <b>{% if ltv.value_per_lead %}€ {{ ltv.value_per_lead|floatformat:2 }}{% else %}—{% endif %}</b>
+      <span>Across every lead acquired</span>
+    </article>
+    <article>
+      <small>REPEAT RATE</small>
+      <b>{{ ltv.repeat_rate }}%</b>
+      <span>{{ ltv.repeat_customers }} bought more than once</span>
+    </article>
+    <article>
+      <small>ATTRIBUTION COVERAGE</small>
+      <b>{{ gap.coverage }}%</b>
+      <span>€ {{ gap.unattributed|floatformat:0 }} untraced</span>
+    </article>
+  </section>
+
+  {% if missing_rates %}
+  <div class="notice warning">
+    {{ unconverted }} conversion{{ unconverted|pluralize }} cannot be reported yet: no exchange rate on file for
+    <b>{{ missing_rates|join:", " }}</b>. Add one under
+    <a href="{% url 'module' 'fx-rates' %}">Exchange Rates</a>. The revenue is held out of every figure on this
+    page rather than being counted as euro.
+  </div>
+  {% endif %}
+
+  <div class="module-grid">
+
+    <section class="panel">
+      <h2>Channel performance<span class="count">{{ channels|length }} channel{{ channels|length|pluralize }}</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Channel</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>ROI</th><th>Leads</th><th>Conv.</th></tr>
+          </thead>
+          <tbody>
+            {% for row in channels %}
+            <tr>
+              <td class="text"><span class="row-title">{{ row.channel }}</span><span class="row-sub">{{ row.margin }}% margin</span></td>
+              <td class="num">€ {{ row.revenue|floatformat:0 }}</td>
+              <td class="num">€ {{ row.cost|floatformat:0 }}</td>
+              <td class="num">€ {{ row.profit|floatformat:0 }}</td>
+              <td class="num">{% if row.roi is not None %}{{ row.roi }}%{% else %}—{% endif %}</td>
+              <td class="num">{{ row.leads }}</td>
+              <td class="num">{{ row.conversion }}%</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="7"><b>No financial records yet</b>
+              <span>Record a conversion, or let the nightly roll-up build these rows from attributed revenue.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Campaign performance<span class="count">most recent sends</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Campaign</th><th>Open</th><th>Click</th><th>Unsub.</th><th>Revenue</th><th>Per recipient</th></tr>
+          </thead>
+          <tbody>
+            {% for row in campaigns %}
+            <tr>
+              <td class="text"><span class="row-title">{{ row.campaign.name }}</span>
+                <span class="row-sub">{{ row.campaign.recipients }} recipient{{ row.campaign.recipients|pluralize }} ·
+                  sent {{ row.campaign.sent_at|date:"j M" }}</span></td>
+              <td class="num">{{ row.open_rate }}%</td>
+              <td class="num">{{ row.click_rate }}%</td>
+              <td class="num">{{ row.unsubscribe_rate }}%</td>
+              <td class="num">€ {{ row.revenue|floatformat:0 }}</td>
+              <td class="num">{% if row.revenue_per_recipient %}€ {{ row.revenue_per_recipient|floatformat:2 }}{% else %}—{% endif %}</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="6"><b>No campaigns sent yet</b>
+              <span>Open and click rates appear here once a campaign has gone out and been read.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Cohorts<span class="count">by month acquired</span></h2>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Month</th><th>Leads</th><th>Customers</th><th>Conversion</th><th>Revenue</th><th>Per lead</th></tr>
+          </thead>
+          <tbody>
+            {% for row in cohorts %}
+            <tr>
+              <td>{{ row.month }}</td>
+              <td class="num">{{ row.leads }}</td>
+              <td class="num">{{ row.customers }}</td>
+              <td class="num">{{ row.conversion }}%</td>
+              <td class="num">€ {{ row.revenue|floatformat:0 }}</td>
+              <td class="num">€ {{ row.value_per_lead|floatformat:2 }}</td>
+            </tr>
+            {% empty %}
+            <tr><td class="empty" colspan="6"><b>No cohorts yet</b>
+              <span>Leads are grouped by the month they arrived, against what they went on to spend.</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel module-side">
+      <h2>Forecast<span class="count">{{ forecast.horizon_days }} days</span></h2>
+      {% if forecast.available %}
+      <div class="forecast">
+        <b>€ {{ forecast.total|floatformat:0 }}</b>
+        <span class="badge {% if forecast.direction == 'rising' %}active{% elif forecast.direction == 'falling' %}failed{% else %}pending{% endif %}">{{ forecast.direction|title }}</span>
+        <small>about € {{ forecast.daily_average|floatformat:0 }} a day</small>
+        {% if forecast.change is not None %}<small>{{ forecast.change }}% against the last {{ forecast.horizon_days }} days</small>{% endif %}
+      </div>
+      <div class="notice{% if forecast.fit < 0.3 %} warning{% endif %}">
+        Straight-line trend over {{ forecast.points }} days, fit {{ forecast.fit }}.
+        {% if forecast.fit < 0.3 %}A fit this low means the history is too noisy — read the direction, not the number.
+        {% else %}The trend explains most of the variation in the history.{% endif %}
+      </div>
+      {% else %}
+      <div class="notice warning">Not enough history: {{ forecast.reason }}.</div>
+      {% endif %}
+
+      <h2>Recent conversions<span class="count">{{ recent|length }}</span></h2>
+      {% for conversion in recent %}
+      <article>
+        <span>
+          <b>€ {{ conversion.amount|floatformat:2 }} {{ conversion.currency }}</b>
+          <small>{{ conversion.lead.email|default:conversion.email|default:"unknown lead" }}</small>
+          <small>{% if conversion.email_campaign %}via {{ conversion.email_campaign.name }}{% else %}unattributed{% endif %} ·
+            {{ conversion.occurred_at|date:"j M" }}</small>
+        </span>
+        <span class="badge {% if conversion.attribution == 'unattributed' %}pending{% else %}active{% endif %}">{{ conversion.get_attribution_display }}</span>
+      </article>
+      {% empty %}
+      <div class="empty"><b>No conversions recorded</b>
+        <span>Add one to start tracing revenue back to the campaign that earned it.</span></div>
+      {% endfor %}
+    </aside>
+
+  </div>
+</div>
+{% endblock %}

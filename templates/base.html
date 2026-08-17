@@ -30,14 +30,36 @@
       <a href="{% url 'automation-center' %}"><svg class="ico"><use href="#i-workflow"/></svg>Automation &amp; Workflows</a>
       <a href="{% url 'integrations-center' %}"><svg class="ico"><use href="#i-plug"/></svg>Integration Center</a>
       <a href="{% url 'module' 'analytics' %}"><svg class="ico"><use href="#i-chart"/></svg>Analytics &amp; Reports</a>
+      <a href="{% url 'revenue-center' %}"><svg class="ico"><use href="#i-trend"/></svg>Revenue &amp; Attribution</a>
+      <a href="{% url 'module' 'conversions' %}"><svg class="ico"><use href="#i-inbox"/></svg>Conversions</a>
       <a href="{% url 'module' 'intelligence' %}"><svg class="ico"><use href="#i-cpu"/></svg>AI Intelligence Suite</a>
       <a href="{% url 'module' 'finance' %}"><svg class="ico"><use href="#i-euro"/></svg>Finance &amp; Profitability</a>
       <a href="{% url 'whatsapp-center' %}"><svg class="ico"><use href="#i-chat"/></svg>WhatsApp Center</a>
       <a href="{% url 'module' 'settings' %}"><svg class="ico"><use href="#i-settings"/></svg>Settings &amp; Preferences</a>
       <a href="{% url 'module' 'users' %}"><svg class="ico"><use href="#i-users"/></svg>User &amp; Permissions</a>
+      {% if request.user.is_superuser %}
+      <a href="{% url 'module' 'organisations' %}"><svg class="ico"><use href="#i-grid"/></svg>Organisations</a>
+      <a href="{% url 'module' 'fx-rates' %}"><svg class="ico"><use href="#i-euro"/></svg>Exchange Rates</a>
+      {% endif %}
       <a href="{% url 'module' 'audit' %}"><svg class="ico"><use href="#i-list"/></svg>Audit Logs</a>
       <a href="{% url 'module' 'support' %}"><svg class="ico"><use href="#i-headset"/></svg>Help Desk &amp; Support</a>
     </nav>
+
+    {# Only worth the space once there is more than one entity to switch between. #}
+    {% if request.multi_entity %}
+    <div class="side-title quick-label">ENTITY</div>
+    <form class="org-switch" method="post" action="{% url 'switch-organisation' %}">{% csrf_token %}
+      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      {# No inline onchange: the CSP is script-src 'self', so an event attribute
+         here would be blocked and the control would silently do nothing. #}
+      <select name="organisation" aria-label="Active organisation">
+        {% for org in organisations %}
+        <option value="{{ org.pk }}"{% if org.pk == request.organisation.pk %} selected{% endif %}>{{ org.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="action">Switch</button>
+    </form>
+    {% endif %}
 
     <div class="side-title quick-label">QUICK ACTIONS</div>
     <div class="quick-actions">

@@ -1,0 +1,39 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex,nofollow">
+<title>Owner action — Emerald Rozalia Limited</title>
+<link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+<main class="login-wrap panel">
+  <img src="{% static 'images/emerald-rozalia-limited-logo.png' %}" alt="Emerald Rozalia Limited" width="240" height="74">
+
+  {% if expired %}
+  <h1>LINK NO LONGER VALID</h1>
+  <div class="notice error">This action link has expired or has already been changed. Open the console and action the item there.</div>
+  <p><a class="primary" href="{% url 'dashboard' %}">Open the console</a></p>
+
+  {% elif done %}
+  <h1>DONE</h1>
+  <div class="notice">The {{ label }} is now <b>{{ status }}</b>.</div>
+  <p class="action-record">{{ record }}</p>
+  <p><a class="primary" href="{% url 'dashboard' %}">Open the console</a></p>
+
+  {% else %}
+  <h1>CONFIRM {{ action|upper }}</h1>
+  <p>You are about to <b>{{ action }}</b> this {{ label }}.</p>
+  <p class="action-record">{{ record }}</p>
+  {# Deliberately a form, not a link: mail scanners fetch every URL in a
+     message, and a GET that acted would let one decide this on its own. #}
+  <form method="post">{% csrf_token %}
+    <button class="primary">Yes, {{ action }} it</button>
+  </form>
+  <p><a class="back-link" href="{% url 'dashboard' %}">Cancel and open the console</a></p>
+  {% endif %}
+</main>
+</body>
+</html>

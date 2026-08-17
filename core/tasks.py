@@ -6,21 +6,34 @@ counted as success — the previous implementation copied the action list onto t
 run and reported "completed" without doing anything at all.
 """
 import re
+from decimal import Decimal
 
 from celery import shared_task
 from django.core.mail import EmailMultiAlternatives
-from django.db.models import Count
+from django.db.models import Count, F, Sum
 from django.utils import timezone
-from django.utils.html import strip_tags
+from django.utils.html import escape, strip_tags
 
 from django.conf import settings
 from django.template.loader import render_to_string
 
 from .segments import resolve as resolve_segment
+from .tenancy import default_organisation
+from .tracking import decorate, new_token, site_url, unsubscribe_headers, unsubscribe_url
 from .models import (
-    AiDecision, AttentionItem, ConsentEvent, Automation, AuditLog, EmailCampaign, Integration,
-    IntegrationCheck, Lead, MessageDelivery, WhatsAppTemplate, WorkflowRun,
+    AiDecision, AttentionItem, ConsentEvent, Automation, AuditLog, Conversion, EmailCampaign,
+    FinancialRecord, Integration, IntegrationCheck, Lead, MessageDelivery, WhatsAppTemplate,
+    WorkflowRun,
 )
+
+# Severity rungs the escalation ladder climbs.
+SEVERITY_LADDER = ["low", "medium", "high", "critical"]
+
+
+def _sender_name(record=None):
+    """The trading name to sign outbound mail with, for this record's entity."""
+    organisation = getattr(record, "organisation", None) or default_organisation()
+    return organisation.name if organisation else "Emerald Rozalia Limited"
 
 
 # --- action handlers -------------------------------------------------------
@@ -31,14 +44,26 @@ def _action_send_email(automation, lead, action, context):
         raise LookupError("no lead in the trigger payload to email")
     if not lead.consent_at or lead.status == "unsubscribed":
         raise PermissionError(f"{lead.email} has not consented")
-    subject = f"{automation.name} — Emerald Rozalia Limited"
-    body = f"Hello {lead.first_name},\n\nThis message was sent by the '{automation.name}' workflow."
+    sender = _sender_name(automation)
+    base = site_url()
+    subject = f"{automation.name} — {sender}"
     delivery = MessageDelivery.objects.create(
-        channel="email", recipient=lead.email, template=automation.name,
+        channel="email", recipient=lead.email, template=automation.name, token=new_token(),
         status="sending", metadata={"automation_id": automation.id, "depth": context.get("depth", 0)},
     )
+    # Workflow mail is marketing, so it carries the same tracking and the same
+    # one-click unsubscribe as a campaign. An automated sequence with no way
+    # out is the fastest route to a spam complaint.
+    html = decorate(
+        f"<p>Hello {escape(lead.first_name)},</p>"
+        f"<p>This message was sent by the &lsquo;{escape(automation.name)}&rsquo; workflow.</p>",
+        delivery.token, base, sender)
+    text = (f"Hello {lead.first_name},\n\nThis message was sent by the '{automation.name}' workflow."
+            f"\n\nUnsubscribe: {unsubscribe_url(delivery.token, base)}\n")
     try:
-        message = EmailMultiAlternatives(subject, body, None, [lead.email])
+        message = EmailMultiAlternatives(subject, text, None, [lead.email],
+                                         headers=unsubscribe_headers(delivery.token, base))
+        message.attach_alternative(html, "text/html")
         message.send()
         delivery.status = "sent"
         delivery.save()
@@ -51,6 +76,12 @@ def _action_send_email(automation, lead, action, context):
 
 
 def _action_score_lead(automation, lead, action, context):
+    """Score a lead on what it is, plus what it has actually done.
+
+    The attribute weights are unchanged. Engagement is added on top and the
+    total still caps at 100, so a complete profile that also clicks cannot be
+    ranked below one that has never opened anything.
+    """
     if lead is None:
         raise LookupError("no lead in the trigger payload to score")
     score = 20
@@ -60,6 +91,11 @@ def _action_score_lead(automation, lead, action, context):
         score += 20
     if lead.phone:
         score += 20
+    engagement = MessageDelivery.objects.filter(channel="email", recipient__iexact=lead.email)
+    if engagement.exclude(clicked_at=None).exists():
+        score += 20
+    elif engagement.exclude(opened_at=None).exists():
+        score += 10
     lead.score = min(score, 100)
     lead.save(update_fields=["score", "updated_at"])
     return f"scored {lead.email} at {lead.score}"
@@ -92,7 +128,7 @@ def _action_send_whatsapp(automation, lead, action, context):
         delivery.external_id = send_whatsapp_template(recipient, template.name, template.language)
         delivery.status = "sent"
         delivery.save()
-        WhatsAppTemplate.objects.filter(pk=template.pk).update(sent=template.sent + 1)
+        WhatsAppTemplate.objects.filter(pk=template.pk).update(sent=F("sent") + 1)
     except Exception as exc:
         delivery.status = "failed"
         delivery.error = str(exc)[:1000]
@@ -271,19 +307,27 @@ def send_campaign(campaign_id):
     # The segment finally selects the audience instead of being decorative.
     audience, description, unknown = resolve_segment(campaign.segment)
     recipients = list(audience.values_list("email", flat=True))
+    sender = _sender_name(campaign)
+    base = site_url()
 
     sent = failures = skipped = 0
     for address in recipients:
         if address in already_sent:
             skipped += 1
             continue
+        # The token is per recipient, so every tracked URL in this message
+        # identifies one delivery and never carries the address itself.
         delivery = MessageDelivery.objects.create(
-            channel="email", recipient=address, template=campaign.name,
+            channel="email", recipient=address, template=campaign.name, token=new_token(),
             status="sending", metadata={"campaign_id": campaign.id},
         )
+        html = decorate(campaign.content, delivery.token, base, sender)
+        text = (strip_tags(campaign.content).strip()
+                + f"\n\nUnsubscribe: {unsubscribe_url(delivery.token, base)}\n")
         try:
-            message = EmailMultiAlternatives(campaign.subject, strip_tags(campaign.content), None, [address])
-            message.attach_alternative(campaign.content, "text/html")
+            message = EmailMultiAlternatives(campaign.subject, text, None, [address],
+                                             headers=unsubscribe_headers(delivery.token, base))
+            message.attach_alternative(html, "text/html")
             message.send()
             delivery.status = "sent"
             sent += 1
@@ -301,9 +345,13 @@ def send_campaign(campaign_id):
     AuditLog.objects.create(
         event="email_campaign.delivery_completed",
         new_values={"id": campaign_id, "sent": sent, "failures": failures, "skipped": skipped,
-                    "segment": campaign.segment, "audience": description},
+                    "segment": campaign.segment, "audience": description,
+                    # Distinguishes "the relay rejected everything" from "the
+                    # segment matched nobody", which both end as status=failed.
+                    "reason": "no recipients matched the segment" if not recipients else ""},
     )
-    return {"sent": sent, "failures": failures, "skipped": skipped, "audience": description}
+    return {"sent": sent, "failures": failures, "skipped": skipped, "audience": description,
+            "unknown_segment_terms": unknown}
 
 
 @shared_task
@@ -332,6 +380,9 @@ def build_digest(window_hours=24):
     now = timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
     open_items = AttentionItem.objects.exclude(status="resolved")
+    engaged = MessageDelivery.objects.filter(channel="email", created_at__gte=since)
+    revenue = (Conversion.objects.filter(occurred_at__gte=since)
+               .aggregate(total=Sum("base_amount"), n=Count("id")))
     return {
         "generated_at": timezone.localtime(now),
         "window_hours": window_hours,
@@ -347,6 +398,11 @@ def build_digest(window_hours=24):
         "workflow_failures": WorkflowRun.objects.filter(started_at__gte=since, status="failed").count(),
         "pending_decisions": AiDecision.objects.filter(status="pending").count(),
         "broken_integrations": list(Integration.objects.exclude(status="connected")),
+        # Engagement and money, now that both are actually measured.
+        "opens": engaged.exclude(opened_at=None).count(),
+        "clicks": engaged.exclude(clicked_at=None).count(),
+        "revenue": revenue["total"] or Decimal(0),
+        "conversions": revenue["n"] or 0,
     }
 
 
@@ -467,3 +523,244 @@ def flag_dormant_leads():
             confidence=80, source="Engagement Monitor",
             recommendation=f"No contact in {months} months. Consider a win-back campaign or archive them.")
     return {"dormant": len(dormant), "months": months}
+
+
+# --- engagement review -----------------------------------------------------
+
+@shared_task
+def review_campaign_engagement(min_age_hours=24):
+    """Judge each campaign once, after it has had a day to be read.
+
+    Reviewing immediately after sending would flag every campaign, because
+    nobody has opened anything yet. `reviewed_at` makes the verdict final so a
+    campaign cannot be re-flagged every morning for the rest of its life.
+    """
+    from .signals import fire
+    open_target = float(getattr(settings, "OPEN_RATE_TARGET", 15.0))
+    click_target = float(getattr(settings, "CLICK_RATE_TARGET", 2.0))
+    cutoff = timezone.now() - timezone.timedelta(hours=min_age_hours)
+    due = list(EmailCampaign.objects.filter(status="sent", reviewed_at=None, sent_at__lte=cutoff)
+               .exclude(recipients=0))
+    flagged = 0
+    for campaign in due:
+        EmailCampaign.objects.filter(pk=campaign.pk).update(reviewed_at=timezone.now())
+        below = []
+        if campaign.open_rate < open_target:
+            below.append(f"open rate {campaign.open_rate}% against a {open_target}% target")
+        if campaign.click_rate < click_target:
+            below.append(f"click rate {campaign.click_rate}% against a {click_target}% target")
+        if not below:
+            continue
+        flagged += 1
+        AttentionItem.objects.create(
+            organisation=campaign.organisation,
+            severity="medium", category="Campaign Performance",
+            title=f"{campaign.name} underperformed",
+            confidence=90, source="Engagement Monitor",
+            recommendation=("Below target on " + " and ".join(below)
+                            + ". Try a different subject line, or resend to the "
+                              "'not opened' segment before writing the list off."))
+        fire("campaign.underperforming", {
+            "campaign_id": campaign.pk, "name": campaign.name,
+            "open_rate": campaign.open_rate, "click_rate": campaign.click_rate,
+            "recipients": campaign.recipients})
+    return {"reviewed": len(due), "flagged": flagged}
+
+
+# --- attribution -----------------------------------------------------------
+
+@shared_task
+def attribute_conversions():
+    """Credit each unattributed conversion to the campaign that last engaged it."""
+    from .analytics import attribute
+    window = int(getattr(settings, "ATTRIBUTION_WINDOW_DAYS", 30))
+    pending = list(Conversion.objects.filter(attribution="unattributed", email_campaign=None))
+    matched = sum(1 for conversion in pending if attribute(conversion, window) is not None)
+    return {"reviewed": len(pending), "attributed": matched}
+
+
+@shared_task
+def roll_up_attribution():
+    """Fold conversions into the financial ledger the dashboards already read.
+
+    Grouped by day, market, channel and campaign. `rolled_up_at` means a
+    conversion is counted exactly once however often this runs, and rows the
+    owner typed by hand are never touched because generated rows are matched on
+    `generated=True`.
+    """
+    everything = list(Conversion.objects.filter(rolled_up_at=None))
+    # A conversion with no base-currency figure has no FX rate on file. Rolling
+    # it up at face value would report foreign currency as euro, so it waits
+    # here until a rate is loaded and the owner is told why.
+    unconverted = [c for c in everything if c.base_amount is None]
+    pending = [c for c in everything if c.base_amount is not None]
+    if unconverted:
+        _flag_missing_rates(unconverted)
+    if not pending:
+        return {"rolled_up": 0, "records": 0, "waiting_on_fx": len(unconverted)}
+    groups = {}
+    for conversion in pending:
+        day = timezone.localtime(conversion.occurred_at).date()
+        campaign = conversion.email_campaign
+        key = (day, conversion.market, conversion.channel or "Unattributed",
+               campaign.pk if campaign else None, conversion.organisation_id)
+        group = groups.setdefault(key, {"revenue": Decimal(0), "customers": set(), "ids": [],
+                                        "name": campaign.name if campaign else "Unattributed"})
+        group["revenue"] += conversion.base_amount
+        if conversion.lead_id:
+            group["customers"].add(conversion.lead_id)
+        group["ids"].append(conversion.pk)
+
+    now = timezone.now()
+    for (day, market, channel, campaign_id, organisation_id), group in groups.items():
+        record, _ = FinancialRecord.objects.get_or_create(
+            recorded_on=day, market=market or "Ireland", channel=channel,
+            campaign=group["name"], email_campaign_id=campaign_id, generated=True,
+            defaults={"system": "Attribution", "organisation_id": organisation_id})
+        FinancialRecord.objects.filter(pk=record.pk).update(
+            revenue=F("revenue") + group["revenue"],
+            customers=F("customers") + len(group["customers"]))
+        Conversion.objects.filter(pk__in=group["ids"]).update(rolled_up_at=now)
+    AuditLog.objects.create(event="attribution.rolled_up",
+                            new_values={"conversions": len(pending), "records": len(groups),
+                                        "waiting_on_fx": len(unconverted)})
+    return {"rolled_up": len(pending), "records": len(groups), "waiting_on_fx": len(unconverted)}
+
+
+def _flag_missing_rates(conversions):
+    """Tell the owner which currencies are holding revenue out of the reports."""
+    currencies = sorted({c.currency for c in conversions if c.currency})
+    title = f"{len(conversions)} conversion(s) waiting on an exchange rate"
+    if AttentionItem.objects.filter(title=title, status="pending").exists():
+        return
+    AttentionItem.objects.create(
+        severity="high", category="Governance / Ethical Alert", title=title,
+        impact=None, confidence=100, source="Attribution Engine",
+        recommendation=("No FX rate on file for " + ", ".join(currencies)
+                        + ". Add one under Exchange Rates; the revenue is held out of "
+                          "every report until then rather than counted as euro."))
+
+
+# --- owner alerting --------------------------------------------------------
+
+@shared_task
+def dispatch_critical_alerts():
+    """Push newly raised critical items straight to the owner.
+
+    `alerted_at` is stamped before the send, not after: a mail server timing
+    out must not turn into the same alert going out on every subsequent run.
+    """
+    from .alerts import send_critical_alert, send_whatsapp_alert
+    pending = list(AttentionItem.objects.filter(severity="critical", alerted_at=None)
+                   .exclude(status__in=["resolved", "dismissed", "closed"]))
+    delivered = 0
+    for item in pending:
+        AttentionItem.objects.filter(pk=item.pk).update(alerted_at=timezone.now())
+        try:
+            send_critical_alert(item)
+            delivered += 1
+        except Exception as exc:
+            AuditLog.objects.create(event="alert.critical_failed",
+                                    new_values={"attention_id": item.pk, "error": str(exc)[:300]})
+        try:
+            send_whatsapp_alert(item)
+        except Exception:
+            # WhatsApp is the second channel; email has already gone.
+            pass
+    return {"alerted": delivered, "considered": len(pending)}
+
+
+def _next_severity(current):
+    try:
+        return SEVERITY_LADDER[min(SEVERITY_LADDER.index(current) + 1, len(SEVERITY_LADDER) - 1)]
+    except ValueError:
+        return "high"
+
+
+@shared_task
+def escalate_attention():
+    """Raise the severity of items still open long past their deadline.
+
+    `sweep_overdue_attention` reports a deadline once. This is the ladder that
+    follows: each configured step past the deadline moves the item up one
+    severity, and reaching critical clears `alerted_at` so the alert dispatcher
+    picks it up on its next pass.
+    """
+    from .signals import fire
+    steps = [int(step) for step in getattr(settings, "ESCALATION_STEPS", [4, 24, 72])]
+    now = timezone.now()
+    candidates = (AttentionItem.objects.exclude(status__in=["resolved", "dismissed", "closed"])
+                  .exclude(due_at=None).filter(due_at__lt=now))
+    escalated = 0
+    for item in candidates:
+        overdue_hours = (now - item.due_at).total_seconds() / 3600
+        level = sum(1 for step in steps if overdue_hours >= step)
+        if level <= item.escalation_level:
+            continue
+        severity = _next_severity(item.severity)
+        fields = {"escalation_level": level, "escalated_at": now, "severity": severity}
+        if severity == "critical" and item.severity != "critical":
+            fields["alerted_at"] = None
+        AttentionItem.objects.filter(pk=item.pk).update(**fields)
+        fire("attention.escalated", {"attention_id": item.pk, "title": item.title,
+                                     "severity": severity, "level": level,
+                                     "overdue_hours": round(overdue_hours, 1)})
+        escalated += 1
+    return {"escalated": escalated}
+
+
+# --- weekly business review ------------------------------------------------
+
+def build_weekly_review(weeks=1):
+    """The numbers behind the Monday morning review, as plain data."""
+    from .analytics import (attribution_gap, campaign_performance, channel_performance,
+                            forecast, lifetime_value)
+    now = timezone.now()
+    since = now - timezone.timedelta(weeks=weeks)
+    previous = since - timezone.timedelta(weeks=weeks)
+    this_week = Conversion.objects.filter(occurred_at__gte=since).aggregate(
+        revenue=Sum("base_amount"), n=Count("id"))
+    last_week = Conversion.objects.filter(occurred_at__gte=previous, occurred_at__lt=since).aggregate(
+        revenue=Sum("base_amount"), n=Count("id"))
+    current = this_week["revenue"] or Decimal(0)
+    prior = last_week["revenue"] or Decimal(0)
+    return {
+        "generated_at": timezone.localtime(now),
+        "weeks": weeks,
+        "revenue": current,
+        "revenue_change": (round(float(current - prior) / float(prior) * 100, 1) if prior else None),
+        "conversions": this_week["n"] or 0,
+        "new_leads": Lead.objects.filter(created_at__gte=since).count(),
+        "channels": channel_performance()[:6],
+        "campaigns": campaign_performance(limit=5),
+        "cohorts": cohorts_for_review(),
+        "ltv": lifetime_value(),
+        "forecast": forecast(),
+        "gap": attribution_gap(),
+        "open_items": AttentionItem.objects.exclude(
+            status__in=["resolved", "dismissed", "closed"]).count(),
+    }
+
+
+def cohorts_for_review(months=4):
+    from .analytics import cohorts
+    return cohorts(months)
+
+
+@shared_task
+def send_weekly_review(weeks=1):
+    """Monday morning: how the business did, not just what needs attention."""
+    recipient = getattr(settings, "OWNER_EMAIL", "") or settings.DEFAULT_FROM_EMAIL
+    review = build_weekly_review(weeks)
+    subject = (f"Weekly business review — €{review['revenue']:,.0f} from "
+               f"{review['conversions']} conversion(s)")
+    html = render_to_string("email/weekly_review.html", review)
+    message = EmailMultiAlternatives(subject, strip_tags(html), None, [recipient])
+    message.attach_alternative(html, "text/html")
+    message.send()
+    AuditLog.objects.create(event="weekly_review.sent",
+                            new_values={"recipient": recipient,
+                                        "revenue": str(review["revenue"]),
+                                        "conversions": review["conversions"]})
+    return {"sent_to": recipient, "revenue": str(review["revenue"]),
+            "conversions": review["conversions"]}

@@ -7,10 +7,11 @@ from django.contrib.auth.models import User
 from django.db import models
 from django.core.paginator import Paginator
 from django.db.models import Sum, Count, Q
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
@@ -19,18 +20,23 @@ from django.utils.dateparse import parse_datetime
 from .segments import resolve as resolve_segment, describe as describe_segment, consented_leads
 from .services import test_integration, run_ai_engine, send_whatsapp_template
 from .tasks import send_campaign, execute_workflow
+from . import analytics as reporting
+from .alerts import TARGETS as ACTION_TARGETS, apply_action, resolve_token
+from .tenancy import SESSION_KEY as ORG_SESSION_KEY, has_organisation, scope
+from .tracking import PIXEL, record as record_engagement, unsign_target
 
-MODELS={"leads":Lead,"campaigns":Campaign,"content":ContentItem,"email-marketing":EmailCampaign,"automations":Automation,"integrations":Integration,"finance":FinancialRecord,"aeo":AeoEntry,"intelligence":AiDecision,"whatsapp":WhatsAppTemplate,"settings":Setting,"audit":AuditLog,"support":SupportTicket}
+MODELS={"leads":Lead,"campaigns":Campaign,"content":ContentItem,"email-marketing":EmailCampaign,"automations":Automation,"integrations":Integration,"finance":FinancialRecord,"aeo":AeoEntry,"intelligence":AiDecision,"whatsapp":WhatsAppTemplate,"settings":Setting,"audit":AuditLog,"support":SupportTicket,"conversions":Conversion,"organisations":Organisation,"fx-rates":FxRate}
 DISPLAY_SKIP={"id","password","config","old_values","new_values"}
-# Accounts, credentials and the audit trail are owner-only.
-SUPERUSER_ONLY={"users","audit","settings"}
+# Accounts, credentials, the audit trail and the entity register are owner-only.
+SUPERUSER_ONLY={"users","audit","settings","organisations","fx-rates"}
 # The audit trail and the analytics report are never edited through the UI.
 READONLY_SLUGS={"audit","analytics"}
 # Health-check slug -> the Integration.category it belongs to.
 SERVICE_CATEGORY={"database":"Database","smtp":"Email","whatsapp":"WhatsApp","openai":"AI"}
 PAGE_SIZE=25
 # Shown beside the segment field so the syntax is discoverable.
-SEGMENT_HELP=["all","wholesale","retail","status:qualified","market:Ireland","source:Website","score>=70"]
+SEGMENT_HELP=["all","wholesale","retail","status:qualified","market:Ireland","source:Website",
+              "score>=70","opened","clicked","not opened"]
 
 LEAD_IMPORT_FIELDS = ["first_name", "last_name", "email", "phone", "company",
                       "market", "source", "status", "score", "consent_at"]
@@ -150,12 +156,17 @@ def _editable_fields(model,slug):
         "finance":set(),
         "settings":{"value"},
         "support":{"subject","category","priority","description","status"},
+        # Attribution and the base-currency figure are computed. A hand-typed
+        # attribution is indistinguishable from a measured one in any report.
+        "conversions":{"email","amount","currency","market","channel","reference","occurred_at"},
     }
     if slug in allowed_by_slug:
         allowed=allowed_by_slug[slug]
         return [f for f in model._meta.fields if f.name in allowed]
+    # `organisation` is the tenant key: set from the active entity, never typed.
     return [f for f in model._meta.fields
-            if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
+            if f.editable and not f.auto_created
+            and f.name not in {"id","created_at","updated_at","owner","user","organisation"}]
 
 def _form_values(model,post,names=None):
     """Coerce POSTed strings into model field values."""
@@ -198,7 +209,7 @@ def _cell(field,value):
     if isinstance(field,(models.IntegerField,models.FloatField)): return {"value":f"{value:,}","kind":"num"}
     text=str(value)
     return {"value":text[:180]+("…" if len(text)>180 else ""),"kind":"text"}
-TITLES={"leads":"Leads & Customers","campaigns":"Campaigns","content":"Content Center","email-marketing":"Email Marketing","automations":"Automation & Workflows","integrations":"Integration Center","finance":"Finance & Profitability","aeo":"AI Optimized Marketing (AEO)","intelligence":"AI Intelligence Suite","whatsapp":"WhatsApp Center","settings":"Settings & Preferences","audit":"Audit Logs","support":"Help Desk & Support"}
+TITLES={"leads":"Leads & Customers","campaigns":"Campaigns","content":"Content Center","email-marketing":"Email Marketing","automations":"Automation & Workflows","integrations":"Integration Center","finance":"Finance & Profitability","aeo":"AI Optimized Marketing (AEO)","intelligence":"AI Intelligence Suite","whatsapp":"WhatsApp Center","settings":"Settings & Preferences","audit":"Audit Logs","support":"Help Desk & Support","conversions":"Conversions & Attribution","organisations":"Organisations","fx-rates":"Exchange Rates"}
 
 @ratelimit(key="ip",rate="10/m",method="POST",block=False)
 @ratelimit(key="post:email",rate="5/m",method="POST",block=False)
@@ -366,6 +377,9 @@ def command_center(request):
         {"tone":"safe","count":by_severity["safe"],"title":"Safe / Auto-Executed","note":"Running smoothly"},
     ]
 
+    # The insights panel asked for cards.4, which is the governance card, not
+    # the auto-executed one — so it showed the wrong number under the label.
+    auto_executed=by_category.get("Auto-Executed",0)
     avg_confidence=round(sum(i.confidence for i in items)/len(items)) if items else None
     decisions=list(AiDecision.objects.all())
     # None rather than 0 so the template can show "—" instead of implying a real
@@ -384,7 +398,8 @@ def command_center(request):
         "spark_conversion":_spark(lead_series),"spark_whatsapp":_spark(rev_series),
         "cards":cards,"matrix":matrix,"column_totals":column_totals,"severities":SEVERITIES,
         "filters":filters,"summary":summary,"attention":open_items[:8],"open_count":len(open_items),
-        "overdue":overdue,"avg_confidence":avg_confidence,"decision_accuracy":decision_accuracy,
+        "overdue":overdue,"avg_confidence":avg_confidence,"auto_executed":auto_executed,
+        "decision_accuracy":decision_accuracy,
         "risk_score":risk_score,"decisions":AiDecision.objects.filter(status="pending").count(),
         "generated_at":timezone.localtime(now),
     })
@@ -512,14 +527,20 @@ def module(request,slug):
                 messages.error(request,f"Could not update record: {exc}")
         else:
             data=_form_values(model,request.POST,{f.name for f in _editable_fields(model,slug)})
-            try: model.objects.create(**data); messages.success(request,"Record created")
+            # New records belong to the entity currently being viewed.
+            if has_organisation(model): data["organisation"]=getattr(request,"organisation",None)
+            try:
+                model.objects.create(**data)
+                messages.success(request,"Record created")
             except Exception as exc: messages.error(request,f"Could not create record: {exc}")
         return _back(request,slug)
     # Search across the model's own text columns. CharField covers Email/Slug/URL
     # subclasses; JSON and numeric columns are skipped because `icontains` on them
     # is not portable across SQLite and PostgreSQL.
     query=(request.GET.get("q") or "").strip()
-    queryset=model.objects.order_by("-pk")
+    # Scoped to the active entity. With a single organisation this is a no-op,
+    # so nothing can be hidden by a tenant key that does not matter yet.
+    queryset=scope(model.objects.order_by("-pk"),getattr(request,"organisation",None))
     if query:
         condition=Q()
         for field in model._meta.fields:
@@ -528,19 +549,21 @@ def module(request,slug):
                 condition|=Q(**{f"{field.name}__icontains":query})
         queryset=queryset.filter(condition) if condition else queryset.none()
 
-    display_fields_for_export=[f for f in model._meta.fields if f.name not in DISPLAY_SKIP]
+    # The tenant column is noise while there is one entity, and essential once
+    # there are several. One computation, used by both the table and the export.
+    skip=set(DISPLAY_SKIP) if getattr(request,"multi_entity",False) else DISPLAY_SKIP|{"organisation"}
+    display_fields=[f for f in model._meta.fields if f.name not in skip]
+    # Record-keeping timestamps move to the end so identifying columns lead the table.
+    display_fields.sort(key=lambda f: f.name in {"created_at","updated_at","date_joined","last_login"})
+
     if request.GET.get("export")=="csv":
         AuditLog.objects.create(user=request.user,event=f"{model._meta.model_name}.exported",
                                 new_values={"rows":queryset.count(),"search":query})
-        return _export_csv(queryset,display_fields_for_export,slug)
+        return _export_csv(queryset,display_fields,slug)
 
     paginator=Paginator(queryset,PAGE_SIZE)
     page_obj=paginator.get_page(request.GET.get("page"))
     items=page_obj.object_list
-
-    display_fields=[f for f in model._meta.fields if f.name not in DISPLAY_SKIP]
-    # Record-keeping timestamps move to the end so identifying columns lead the table.
-    display_fields.sort(key=lambda f: f.name in {"created_at","updated_at","date_joined","last_login"})
 
     def _row_cells(obj):
         cells=[]
@@ -580,7 +603,7 @@ def module(request,slug):
         return value
 
     form_fields=[{"field":f,"value":_initial(f)} for f in fields]
-    total=model.objects.count()
+    total=scope(model.objects.all(),getattr(request,"organisation",None)).count()
     context={"title":TITLES.get(slug,slug.title()),"slug":slug,"rows":rows,"columns":[f.verbose_name for f in display_fields],
              "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows),
              "query":query,"page_obj":page_obj,"match_count":paginator.count,"can_import":slug=="leads",
@@ -647,7 +670,12 @@ def whatsapp_center(request):
             template=get_object_or_404(WhatsAppTemplate,pk=request.POST.get("template_id"),status="approved"); recipient=request.POST["recipient"].replace(" ","").replace("+","")
             delivery=MessageDelivery.objects.create(channel="whatsapp",recipient=recipient,template=template.name,status="sending")
             try:
-                delivery.external_id=send_whatsapp_template(recipient,template.name,template.language); delivery.status="sent"; template.sent+=1; template.save(); messages.success(request,"WhatsApp template sent through Meta Cloud API")
+                delivery.external_id=send_whatsapp_template(recipient,template.name,template.language); delivery.status="sent"
+                # F() rather than template.sent+=1: a full save here would write
+                # back every counter as it was read, discarding webhook receipts
+                # that landed while the send was in flight.
+                WhatsAppTemplate.objects.filter(pk=template.pk).update(sent=models.F("sent")+1)
+                messages.success(request,"WhatsApp template sent through Meta Cloud API")
             except Exception as exc: delivery.status="failed"; delivery.error=str(exc)[:1000]; messages.error(request,str(exc))
             delivery.save()
         return redirect("whatsapp-center")
@@ -752,26 +780,39 @@ def whatsapp_webhook(request):
                 delivery.save(update_fields=["status","error","updated_at"])
                 updated+=1
                 # Keep the template counters in step with real delivery receipts.
-                template=WhatsAppTemplate.objects.filter(name=delivery.template).first()
-                if template:
-                    if state=="delivered": WhatsAppTemplate.objects.filter(pk=template.pk).update(delivered=template.delivered+1)
-                    elif state=="read": WhatsAppTemplate.objects.filter(pk=template.pk).update(read_count=template.read_count+1)
+                # F(), not a read-then-write: Meta delivers receipts in bursts and
+                # two arriving together would otherwise record only one.
+                if state in {"delivered","read"}:
+                    field="delivered" if state=="delivered" else "read_count"
+                    WhatsAppTemplate.objects.filter(name=delivery.template).update(**{field:models.F(field)+1})
 
     AuditLog.objects.create(event="whatsapp.webhook",new_values={"statuses_applied":updated})
     return JsonResponse({"received":True,"updated":updated})
+def _apply_unsubscribe(email,source):
+    """Withdraw consent for an address, however the request arrived.
+
+    Case-insensitive: addresses are stored as the lead typed them, so an exact
+    lowercase match silently failed and reported success without unsubscribing.
+    """
+    matched=Lead.objects.filter(email__iexact=email).update(consent_at=None,status="unsubscribed")
+    ConsentEvent.objects.create(email=email.lower(),action="unsubscribe",source=source)
+    AuditLog.objects.create(event="consent.unsubscribe",
+                            new_values={"email":email.lower(),"leads_updated":matched,"source":source})
+    return matched
+
 @csrf_exempt
 @require_POST
+@ratelimit(key="ip",rate="30/m",method="POST",block=False)
 def unsubscribe(request):
+    # Unauthenticated by design, so it is rate limited: the reply says whether
+    # an address was on the list, which is worth something to a scraper.
+    if getattr(request,"limited",False):
+        return JsonResponse({"error":"too many requests"},status=429)
     try: payload=json.loads(request.body or b"{}")
     except json.JSONDecodeError: payload=request.POST
     email=payload.get("email","").strip()
     if not email: return JsonResponse({"error":"email required"},status=422)
-    # Case-insensitive: addresses are stored as the lead typed them, so an exact
-    # lowercase match silently failed and reported success without unsubscribing.
-    matched=Lead.objects.filter(email__iexact=email).update(consent_at=None,status="unsubscribed")
-    ConsentEvent.objects.create(email=email.lower(),action="unsubscribe",source="api")
-    AuditLog.objects.create(event="consent.unsubscribe",new_values={"email":email.lower(),"leads_updated":matched})
-    return JsonResponse({"status":"unsubscribed","leads_updated":matched})
+    return JsonResponse({"status":"unsubscribed","leads_updated":_apply_unsubscribe(email,"api")})
 def health(request): return JsonResponse({"status":"ok","service":"Emerald Rozalia Marketing Centre","runtime":"Python 3.14.3"})
 
 
@@ -843,6 +884,116 @@ def sitemap(request):
     return render(request, "public/sitemap.xml", {"urls": urls}, content_type="application/xml")
 
 
+# --- Engagement tracking ----------------------------------------------------
+# Opened from a mail client, so unauthenticated. The delivery token is the only
+# identifier in these URLs; the recipient's address never appears in a link.
+
+def track_open(request, token):
+    """Record an open and return the pixel.
+
+    The pixel is returned whether or not the token is known, so the endpoint
+    cannot be used to test which tokens exist, and never caches — a cached
+    pixel would record the first open and no others.
+    """
+    delivery = MessageDelivery.objects.filter(token=token).first() if token else None
+    if delivery is not None:
+        record_engagement(delivery, "open", request=request)
+    response = HttpResponse(PIXEL, content_type="image/gif")
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response["Pragma"] = "no-cache"
+    return response
+
+
+def track_click(request, token):
+    """Record a click and forward to the signed destination.
+
+    The destination is only ever taken from the signature. Reading it straight
+    from the query string would turn this into an open redirect that borrows
+    the company domain's reputation for someone else's link.
+    """
+    target = unsign_target(request.GET.get("u", ""))
+    if target is None:
+        return HttpResponseBadRequest("This link is not valid.")
+    delivery = MessageDelivery.objects.filter(token=token).first() if token else None
+    if delivery is not None:
+        record_engagement(delivery, "click", url=target, request=request)
+    return redirect(target)
+
+
+@csrf_exempt
+def track_unsubscribe(request, token):
+    """One-click unsubscribe from a campaign footer or a mail client.
+
+    POST acts immediately, which is what RFC 8058 requires of the button Gmail
+    and Yahoo render. GET renders a confirmation instead: security appliances
+    fetch every link in an inbound message, and a mutating GET would let a
+    scanner unsubscribe the recipient it was protecting.
+    """
+    delivery = MessageDelivery.objects.filter(token=token).first() if token else None
+    if delivery is None:
+        return render(request, "public/unsubscribe.html", {"unknown": True}, status=404)
+    if request.method == "POST":
+        _apply_unsubscribe(delivery.recipient, "one-click unsubscribe")
+        record_engagement(delivery, "unsubscribe", request=request)
+        return render(request, "public/unsubscribe.html", {"done": True, "email": delivery.recipient})
+    return render(request, "public/unsubscribe.html", {"email": delivery.recipient, "token": token})
+
+
+# --- Owner actions from a message -------------------------------------------
+
+def owner_action(request, payload):
+    """Resolve an item or decide a recommendation from an alert email."""
+    resolved = resolve_token(payload)
+    if resolved is None:
+        return render(request, "action.html", {"expired": True}, status=400)
+    key, obj, action = resolved
+    target = ACTION_TARGETS[key]
+    context = {"label": target["label"], "record": target["title"](obj), "action": action,
+               "object": obj, "payload": payload, "title": "Owner action"}
+    if request.method == "POST":
+        context["status"] = apply_action(key, obj, action, request, getattr(request, "user", None))
+        context["done"] = True
+    return render(request, "action.html", context)
+
+
+# --- Revenue -----------------------------------------------------------------
+
+@login_required
+def revenue_center(request):
+    """Where the money came from, and what the trend says it will do next."""
+    unconverted = Conversion.objects.filter(base_amount=None)
+    return render(request, "revenue_center.html", {
+        "title": "Revenue & Attribution",
+        "channels": reporting.channel_performance(),
+        "campaigns": reporting.campaign_performance(),
+        "cohorts": reporting.cohorts(),
+        "ltv": reporting.lifetime_value(),
+        "forecast": reporting.forecast(),
+        "gap": reporting.attribution_gap(),
+        "recent": Conversion.objects.select_related("lead", "email_campaign").order_by("-occurred_at")[:20],
+        "missing_rates": sorted({c for c in unconverted.values_list("currency", flat=True) if c}),
+        "unconverted": unconverted.count(),
+    })
+
+
+@login_required
+@require_POST
+def switch_organisation(request):
+    """Change which entity the console is showing."""
+    target = Organisation.objects.filter(pk=request.POST.get("organisation"), is_active=True).first()
+    if target is None:
+        messages.error(request, "That organisation is not available")
+    else:
+        request.session[ORG_SESSION_KEY] = target.pk
+        messages.success(request, f"Now viewing {target.name}")
+    destination = request.POST.get("next") or ""
+    # Never bounce to a host someone else supplied.
+    if not url_has_allowed_host_and_scheme(destination, allowed_hosts={request.get_host()},
+                                           require_https=request.is_secure()):
+        destination = reverse("dashboard")
+    return redirect(destination)
+
+
 def robots(request):
     sitemap_url = request.build_absolute_uri(reverse("sitemap"))
     body = (
@@ -854,6 +1005,9 @@ def robots(request):
         "Disallow: /settings/\n"
         "Disallow: /users/\n"
         "Disallow: /audit/\n"
+        # Tracking and action links are per-recipient and must never be crawled.
+        "Disallow: /e/\n"
+        "Disallow: /act/\n"
         f"\nSitemap: {sitemap_url}\n"
     )
     return HttpResponse(body, content_type="text/plain")

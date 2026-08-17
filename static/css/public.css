@@ -92,6 +92,22 @@ main { max-width: 760px; margin: 0 auto; padding: 0 20px 56px; }
 .back { color: var(--green); text-decoration: none; font-weight: 600; }
 .back:hover { text-decoration: underline; }
 
+/* Unsubscribe confirmation. One clear action, nothing to hunt for — a reader
+   trying to leave should never have to look twice for the button. */
+.confirm {
+  margin: 6px 0 14px;
+  padding: 12px 22px;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  background: var(--green);
+  color: #fff;
+  font: 600 16px/1 inherit;
+  cursor: pointer;
+}
+
+.confirm:hover { filter: brightness(1.08); }
+.confirm:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
 .site-foot {
   max-width: 760px;
   margin: 0 auto;

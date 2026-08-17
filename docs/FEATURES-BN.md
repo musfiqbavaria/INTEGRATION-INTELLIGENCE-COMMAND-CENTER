@@ -1,9 +1,9 @@
 # নতুন ফিচার ও অটোমেশন — কার্যপদ্ধতি ও যাচাইকরণ
 
-Emerald Rozalia Marketing ERP · হালনাগাদ ১৬ আগস্ট ২০২৬
+Emerald Rozalia Marketing ERP · হালনাগাদ ১৭ আগস্ট ২০২৬
 
 এই নথিতে নতুন যুক্ত প্রতিটি বৈশিষ্ট্য, তার কাজ করার পদ্ধতি এবং কীভাবে নিজে
-যাচাই করবেন তা দেওয়া আছে। মোট **৮৭টি স্বয়ংক্রিয় টেস্ট** আছে, সবগুলো পাস করে।
+যাচাই করবেন তা দেওয়া আছে। মোট **১৭৯টি স্বয়ংক্রিয় টেস্ট** আছে, সবগুলো পাস করে।
 
 
 ---
@@ -29,8 +29,12 @@ Emerald Rozalia Marketing ERP · হালনাগাদ ১৬ আগস্ট
 | ১৫ | **CSV রপ্তানি** | সব মডিউলে, সার্চ মেনে | secret `<hidden>`; audit-এ লেখা হয় | `test core.tests.CsvExportTests` | ৪ |
 | ১৬ | **CSV আমদানি** | Leads-এ, dry-run সহ | `email` মিলিয়ে update; “Validate only” ডিফল্ট | `test core.tests.CsvImportTests` | ৭ |
 | ১৭ | **নিরাপত্তা** | অনুমতি, rate limit, webhook স্বাক্ষর | superuser-only মডিউল; ১০/মিনিট IP; `X-Hub-Signature-256` | `test core.tests.PermissionTests` | ১০ |
+| ১৮ | **ইমেইল ট্র্যাকিং** | open ও click সত্যিই মাপা হয় | pixel + স্বাক্ষরিত click redirect; RFC 8058 unsubscribe | `test core.tests.EngagementTrackingTests` | ৯ |
+| ১৯ | **আয়ের হিসাব (Attribution)** | কোন ক্যাম্পেইন টাকা এনেছে | last-touch; রাতে ledger-এ যোগ; forecast ও cohort | `test core.tests.AttributionTests` | ৫ |
+| ২০ | **তাৎক্ষণিক সতর্কতা** | critical বিষয় সঙ্গে সঙ্গে জানায় | ২ মিনিটে ইমেইল/WhatsApp; স্বাক্ষরিত approve লিংক | `test core.tests.CriticalAlertTests` | ৪ |
+| ২১ | **বহু প্রতিষ্ঠান** | একাধিক কোম্পানি ও মুদ্রা | `Organisation` + `FxRate`; দ্বিতীয় প্রতিষ্ঠান যোগ করলেই আলাদা হয়ে যায় | `test core.tests.TenancyTests` | ১১ |
 
-**মোট ৮৭টি টেস্ট** — একসাথে চালাতে: `python manage.py test core`
+**মোট ১৭৯টি টেস্ট** — একসাথে চালাতে: `python manage.py test core`
 
 ### স্বয়ংক্রিয় কাজের সময়সূচি
 
@@ -38,11 +42,17 @@ Emerald Rozalia Marketing ERP · হালনাগাদ ১৬ আগস্ট
 |---|---|---|
 | `process_due_automations` | প্রতি ১ মিনিট | সময় হয়ে যাওয়া workflow সারিতে দেয় |
 | `send_scheduled_campaigns` | প্রতি ১ মিনিট | নির্ধারিত ক্যাম্পেইন পাঠায় |
+| `dispatch_critical_alerts` | প্রতি ২ মিনিট | critical বিষয় সঙ্গে সঙ্গে মালিককে জানায় |
 | `sweep_overdue_attention` | প্রতি ৫ মিনিট | `attention.overdue` ইভেন্ট তোলে |
+| `attribute_conversions` | প্রতি ১০ মিনিট | আয়কে ক্যাম্পেইনের সঙ্গে যুক্ত করে |
 | `process_bounces` | প্রতি ১৫ মিনিট | বারবার ব্যর্থ ঠিকানা unsubscribe করে |
+| `escalate_attention` | প্রতি ১৫ মিনিট | উপেক্ষিত কাজের গুরুত্ব বাড়ায় |
+| `roll_up_attribution` | প্রতিদিন ০২:১৫ | conversion থেকে আর্থিক রেকর্ড বানায় |
 | `expire_stale_consent` | প্রতিদিন ০৩:৩০ | পুরোনো consent বাতিল করে |
 | `flag_dormant_leads` | প্রতিদিন ০৪:০০ | `lead.dormant` ইভেন্ট তোলে |
 | `send_owner_digest` | প্রতিদিন ০৭:০০ | মালিকের দৈনিক ইমেইল |
+| `review_campaign_engagement` | প্রতিদিন ০৯:৩০ | ক্যাম্পেইনের ফল যাচাই করে, একবারই |
+| `send_weekly_review` | সোমবার ০৭:৩০ | সাপ্তাহিক ব্যবসায়িক পর্যালোচনা |
 
 ### ইভেন্ট তালিকা
 
@@ -50,9 +60,13 @@ Emerald Rozalia Marketing ERP · হালনাগাদ ১৬ আগস্ট
 |---|---|---|
 | `lead.created` | নতুন লিড | স্বাগত ইমেইল, স্কোরিং |
 | `lead.consented` | প্রথমবার consent | onboarding সিকোয়েন্স |
+| `lead.engaged` | প্রথমবার লিংকে ক্লিক | আগ্রহীদের follow-up |
 | `campaign.sent` | ক্যাম্পেইন শেষ | ফলাফলের সারসংক্ষেপ |
+| `campaign.underperforming` | লক্ষ্যের নিচে ফল | subject বদলে পুনরায় পাঠানো |
+| `conversion.recorded` | আয় নথিভুক্ত হলে | ধন্যবাদ বার্তা, upsell |
 | `delivery.failed` | পাঠানো ব্যর্থ | সতর্কতা, তালিকা পরিষ্কার |
 | `attention.overdue` | সময়সীমা পার | escalation |
+| `attention.escalated` | বারবার উপেক্ষিত | মালিককে পুনরায় জানানো |
 | `lead.dormant` | ৬ মাস নিষ্ক্রিয় | win-back ক্যাম্পেইন |
 | `lead.bounced` | bounce-এর পর unsubscribe | তালিকা পরিচ্ছন্নতা |
 
@@ -73,7 +87,7 @@ set DJANGO_SETTINGS_MODULE=config.settings_local
 python manage.py test core
 ```
 
-প্রত্যাশিত ফল: `Ran 87 tests ... OK`
+প্রত্যাশিত ফল: `Ran 179 tests ... OK` (প্রায় ২ সেকেন্ড)
 
 **সার্ভার চালু করুন:**
 
@@ -426,10 +440,182 @@ DORMANT_MONTHS=6
 
 ---
 
+---
+
+## ১৩. ইমেইল ট্র্যাকিং — open ও click এখন সত্যিই মাপা হয়
+
+### সমস্যা কী ছিল
+
+Executive Dashboard-এ "open rate" ও "click rate" দেখানো হতো
+`EmailCampaign.opens` ও `.clicks` ফিল্ড থেকে। কিন্তু **কোথাও এই দুটি ফিল্ড
+বাড়ানো হতো না** — মান সবসময় শূন্য ছিল, তাই প্রতিটি শতাংশ আসলে শূন্যের ভাগ।
+
+### কার্যপদ্ধতি
+
+প্রতিটি ক্যাম্পেইন বার্তায় তিনটি জিনিস যোগ হয়:
+
+১. **Tracking pixel** — ১x১ ছবি, যার ঠিকানায় সেই প্রাপকের নিজস্ব token থাকে
+২. **Click redirect** — প্রতিটি `href` আমাদের ঠিকানা দিয়ে ঘুরিয়ে দেওয়া হয়
+৩. **Unsubscribe** — `List-Unsubscribe` header ও ফুটারে লিংক
+
+**গুরুত্বপূর্ণ নিরাপত্তা:** গন্তব্যের ঠিকানা **স্বাক্ষরিত** (signed)। স্বাক্ষর
+ছাড়া কেউ URL বদলে দিলে ৪০০ ফেরত যায়। এটি না থাকলে আমাদের ডোমেইন ব্যবহার করে
+যে কেউ যেকোনো জায়গায় পাঠাতে পারত (open redirect)।
+
+**Token-এ ইমেইল ঠিকানা থাকে না** — কেউ বার্তাটি অন্যকে forward করলেও প্রাপকের
+ঠিকানা ফাঁস হয় না।
+
+**Scanner ছাঁকা:** Barracuda, Proofpoint, Mimecast-এর মতো নিরাপত্তা যন্ত্র
+প্রতিটি লিংক নিজে খুলে দেখে। এদের হিট সংরক্ষণ করা হয় কিন্তু **গোনা হয় না** —
+নইলে একটি স্ক্যান-করা বার্তা পুরোপুরি পঠিত হিসেবে দেখাত।
+
+### নতুন Segment
+
+| লেখা | অর্থ |
+|---|---|
+| `opened` | আগের ক্যাম্পেইন খুলেছে |
+| `clicked` | আগের ক্যাম্পেইনে ক্লিক করেছে |
+| `not opened` | খোলেনি — নতুন subject দিয়ে আবার পাঠানোর তালিকা |
+
+### যাচাই
+
+```bash
+python manage.py test core.tests.EngagementTrackingTests core.tests.OneClickUnsubscribeTests
+python manage.py test core.tests.CampaignTrackingTests core.tests.EngagementSegmentTests
+```
+
+**হাতে-কলমে:** `/email-marketing/` → নিজের ঠিকানায় একটি ক্যাম্পেইন পাঠান →
+ইমেইল খুলুন → `/revenue/` এ open rate শূন্যের বদলে সংখ্যা দেখবেন।
+
+---
+
+## ১৪. আয়ের হিসাব (Attribution) ও পূর্বাভাস
+
+### সমস্যা কী ছিল
+
+`Campaign` আর `FinancialRecord`-এর মধ্যে কোনো সংযোগ ছিল না। আয় ছিল একটি মোট
+সংখ্যা, যা কোন কাজের ফল তা কেউ বলতে পারত না — এই কারণেই Executive Dashboard
+"DATA RECONCILIATION" সতর্কতা দেখাত।
+
+### কার্যপদ্ধতি
+
+নতুন `Conversion` রেকর্ড — একটি টাকা, একটি লিড, একটি ক্যাম্পেইন।
+
+**Last-touch নিয়ম:** টাকা আসার আগে ৩০ দিনের মধ্যে লিড যে ক্যাম্পেইনে শেষবার
+সাড়া দিয়েছে, কৃতিত্ব সেটির। অগ্রাধিকার: **click > open > পাঠানো**। ক্লিক
+ইচ্ছাকৃত কাজ, open হতে পারে শুধু ছবি লোড হওয়া।
+
+রাত ০২:১৫-তে `roll_up_attribution` conversion-গুলোকে `FinancialRecord`-এ
+রূপান্তর করে — তাই dashboard-এর পুরোনো সতর্কতা নিজে থেকেই মিটে যায়।
+**হাতে লেখা রেকর্ড কখনো ছোঁয়া হয় না।**
+
+### নতুন পাতা `/revenue/`
+
+চ্যানেলভিত্তিক ROI · ক্যাম্পেইনভিত্তিক আয় · মাসভিত্তিক cohort · lifetime value ·
+পুনরায় কেনার হার · এবং ৩০ দিনের পূর্বাভাস।
+
+**পূর্বাভাস সৎ থাকে:** ৭ দিনের কম তথ্য থাকলে সংখ্যা দেখায় **না**, এবং সবসময়
+নিজের r² (fit) জানায়। fit কম হলে পাতাতেই লেখা থাকে "সংখ্যা নয়, দিক দেখুন"।
+
+### মুদ্রা — সবচেয়ে গুরুত্বপূর্ণ সুরক্ষা
+
+কোনো মুদ্রার FX rate না থাকলে সেই আয় **কোনো প্রতিবেদনে ঢোকে না**, এবং মালিককে
+জানানো হয় কোন rate লাগবে। ৫০০ ডলারকে ৫০০ ইউরো হিসেবে গোনা — এই ভুলটিই ঠেকানো
+হয়েছে।
+
+### যাচাই
+
+```bash
+python manage.py test core.tests.AttributionTests core.tests.RollUpTests
+python manage.py test core.tests.CurrencyTests core.tests.ForecastTests
+python manage.py test core.tests.RevenueReportingTests core.tests.WeeklyReviewTests
+```
+
+---
+
+## ১৫. তাৎক্ষণিক সতর্কতা ও এক-ক্লিকে অনুমোদন
+
+### সমস্যা কী ছিল
+
+বাইরে যাওয়ার একমাত্র সংকেত ছিল সকাল ০৭:০০-এর digest। সকাল ০৭:০৫-এ ওঠা critical
+বিষয় প্রায় পুরো দিন অপেক্ষা করত।
+
+### কার্যপদ্ধতি
+
+- **২ মিনিটের মধ্যে** critical বিষয় ইমেইলে যায়, `OWNER_WHATSAPP` দেওয়া থাকলে
+  WhatsApp-এও
+- ইমেইলেই **Mark resolved / Dismiss** বোতাম — স্বাক্ষরিত, ৭ দিনে মেয়াদ শেষ
+- **Escalation ladder:** সময়সীমার ৪ / ২৪ / ৭২ ঘণ্টা পার হলে প্রতিবার গুরুত্ব এক
+  ধাপ বাড়ে; critical-এ পৌঁছালে আবার সতর্কতা যায়
+
+### একটি সূক্ষ্ম কিন্তু জরুরি সিদ্ধান্ত
+
+লিংকে ক্লিক করলে **সঙ্গে সঙ্গে কিছু হয় না** — একটি নিশ্চিতকরণ পাতা আসে।
+কারণ নিরাপত্তা যন্ত্র ইমেইলের প্রতিটি লিংক নিজে খুলে দেখে; সঙ্গে সঙ্গে কাজ হলে
+সফটওয়্যারই আপনার সিদ্ধান্ত নিয়ে ফেলত। প্রতিটি ব্যবহার IP সহ audit log-এ লেখা হয়।
+
+### যাচাই
+
+```bash
+python manage.py test core.tests.CriticalAlertTests core.tests.OwnerActionLinkTests
+python manage.py test core.tests.EscalationTests core.tests.SlaDeadlineTests
+```
+
+---
+
+## ১৬. বহু প্রতিষ্ঠান ও বহু মুদ্রার ভিত্তি
+
+### কার্যপদ্ধতি
+
+প্রতিটি ব্যবসায়িক রেকর্ডে এখন `organisation` আছে।
+
+**একটি প্রতিষ্ঠান থাকলে কিছুই বদলায় না** — scoping সম্পূর্ণ নিষ্ক্রিয়, তাই কোনো
+রেকর্ড লুকিয়ে যাওয়ার আশঙ্কা নেই। **দ্বিতীয় প্রতিষ্ঠান যোগ করার সঙ্গে সঙ্গে**
+সব জায়গায় একসাথে আলাদাকরণ চালু হয় এবং sidebar-এ প্রতিষ্ঠান বদলানোর তালিকা দেখা
+যায়। এটি ইচ্ছাকৃত নকশা — মডিউল ধরে ধরে চালু করলে কোথাও বাদ পড়ার ঝুঁকি থাকত।
+
+**মুদ্রা রূপান্তর** রেকর্ডের নিজের তারিখের rate ব্যবহার করে, আজকের rate নয় —
+তাই নতুন rate যোগ করলে গত মাসের হিসাব বদলে যায় না।
+
+`organisation` কখনো হাতে লেখা যায় না; যে প্রতিষ্ঠান দেখা হচ্ছে সেখান থেকে
+স্বয়ংক্রিয়ভাবে বসে। Celery-র কাজে request থাকে না, তাই সেখানে ডিফল্ট
+প্রতিষ্ঠান ব্যবহৃত হয় — কোনো রেকর্ড অভিভাবকহীন থাকে না।
+
+### যাচাই
+
+```bash
+python manage.py test core.tests.TenancyTests
+```
+
+**হাতে-কলমে:** `/organisations/` → দ্বিতীয় একটি প্রতিষ্ঠান যোগ করুন →
+sidebar-এ ENTITY তালিকা দেখা যাবে → বদলে দেখুন, তালিকাও বদলে যাবে।
+
+---
+
+## ১৭. সার্ভারে নেওয়ার সময় (১৭ আগস্ট সংস্করণ)
+
+নতুন migration: `0006` ও `0007`।
+
+`.env`-এ **`SITE_URL` অবশ্যই দিতে হবে** — না দিলে পাঠানো ক্যাম্পেইনের প্রতিটি
+লিংক ভুল ঠিকানায় যাবে।
+
+```
+SITE_URL=https://emeraldrozalia.ie
+OPEN_RATE_TARGET=15.0
+CLICK_RATE_TARGET=2.0
+ATTRIBUTION_WINDOW_DAYS=30
+ESCALATION_STEPS=4,24,72
+OWNER_WHATSAPP=
+```
+
+বিস্তারিত `deploy/DEPLOYMENT.md`-এর সেকশন ১১-এ।
+
+---
+
 ## সংক্ষিপ্ত যাচাই তালিকা
 
 ```bash
-python manage.py test core          # ৮৭টি টেস্ট, সব পাস করা উচিত
+python manage.py test core          # ১৭৯টি টেস্ট, সব পাস করা উচিত
 python manage.py check              # কোনো সমস্যা থাকা উচিত নয়
-python manage.py runserver          # ১৯টি পাতা + ৪টি প্রকাশ্য ঠিকানা
+python manage.py runserver          # ২২টি পাতা + ৭টি প্রকাশ্য ঠিকানা
 ```

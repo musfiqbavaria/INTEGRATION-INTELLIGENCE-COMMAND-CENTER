@@ -1,21 +1,33 @@
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from .alerts import action_token, resolve_token
+from .analytics import (attribute, attribution_gap, channel_performance, cohorts, forecast,
+                        lifetime_value)
 from .models import (
     AeoEntry, AiDecision, AttentionItem, Automation, AuditLog, Campaign, ConsentEvent,
-    ContentItem, EmailCampaign, FinancialRecord, Integration, IntegrationCheck, Lead,
-    MessageDelivery, Setting, SupportTicket, WhatsAppTemplate, WorkflowRun,
+    ContentItem, Conversion, EmailCampaign, EngagementEvent, FinancialRecord, FxRate, Integration,
+    IntegrationCheck, Lead, MessageDelivery, Organisation, Setting, SupportTicket,
+    WhatsAppTemplate, WorkflowRun,
 )
+from .money import to_base
 from .segments import resolve as resolve_segment
-from .tasks import (build_digest, execute_workflow, expire_stale_consent, flag_dormant_leads,
-                    parse_wait, process_bounces, process_due_automations, send_campaign,
-                    send_owner_digest, send_scheduled_campaigns, sweep_overdue_attention)
+from .tenancy import assign, is_multi_entity
+from .tracking import sign_target
+from .tasks import (attribute_conversions, build_digest, dispatch_critical_alerts,
+                    escalate_attention, execute_workflow, expire_stale_consent,
+                    flag_dormant_leads, parse_wait, process_bounces, process_due_automations,
+                    review_campaign_engagement, roll_up_attribution, send_campaign,
+                    send_owner_digest, send_scheduled_campaigns, send_weekly_review,
+                    sweep_overdue_attention)
 
 
 class ApplicationTests(TestCase):
@@ -1019,3 +1031,725 @@ class SupportTicketTests(TestCase):
         references = set(SupportTicket.objects.values_list("reference", flat=True))
         self.assertEqual(len(references), 2)
 
+
+# ===========================================================================
+# Engagement tracking
+# ===========================================================================
+
+@override_settings(SITE_URL="http://testserver")
+class EngagementTrackingTests(TestCase):
+    """Opens and clicks were rendered as rates but never measured."""
+
+    def setUp(self):
+        self.campaign = EmailCampaign.objects.create(name="C", subject="S",
+                                                     content="<p>hi</p>", segment="all",
+                                                     recipients=1, status="sent")
+        self.delivery = MessageDelivery.objects.create(
+            channel="email", recipient="reader@example.ie", template="C", status="sent",
+            token="tok-123", metadata={"campaign_id": self.campaign.pk})
+
+    def _open(self, **extra):
+        return self.client.get("/e/o/tok-123.gif", **extra)
+
+    def test_pixel_is_a_gif_and_records_the_open(self):
+        response = self._open()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/gif")
+        self.assertIn("no-store", response["Cache-Control"])
+        self.delivery.refresh_from_db(); self.campaign.refresh_from_db()
+        self.assertIsNotNone(self.delivery.opened_at)
+        self.assertEqual(self.delivery.open_count, 1)
+        self.assertEqual(self.campaign.opens, 1)
+
+    def test_repeat_opens_do_not_inflate_the_campaign_rate(self):
+        self._open(); self._open(); self._open()
+        self.delivery.refresh_from_db(); self.campaign.refresh_from_db()
+        self.assertEqual(self.delivery.open_count, 3, "raw volume is still recorded")
+        self.assertEqual(self.campaign.opens, 1, "the rate counts recipients, not fetches")
+
+    def test_unknown_token_still_returns_a_pixel(self):
+        response = self.client.get("/e/o/not-a-real-token.gif")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/gif")
+
+    def test_a_scanner_is_recorded_but_not_counted(self):
+        self._open(headers={"user-agent": "Mozilla/5.0 (compatible; Barracuda Link Protection)"})
+        self.delivery.refresh_from_db(); self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.opens, 0)
+        self.assertIsNone(self.delivery.opened_at)
+        self.assertEqual(EngagementEvent.objects.filter(kind="open").count(), 1,
+                         "the hit is still stored, just not counted")
+
+    def test_click_records_and_redirects_to_the_signed_destination(self):
+        target = "https://emeraldrozalia.ie/shop"
+        response = self.client.get(f"/e/c/tok-123?u={sign_target(target)}")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], target)
+        self.delivery.refresh_from_db(); self.campaign.refresh_from_db()
+        self.assertIsNotNone(self.delivery.clicked_at)
+        self.assertEqual(self.campaign.clicks, 1)
+
+    def test_a_click_counts_as_an_open_when_the_pixel_was_blocked(self):
+        self.client.get(f"/e/c/tok-123?u={sign_target('https://example.ie/x')}")
+        self.delivery.refresh_from_db(); self.campaign.refresh_from_db()
+        self.assertIsNotNone(self.delivery.opened_at)
+        self.assertEqual(self.campaign.opens, 1)
+
+    def test_an_unsigned_destination_is_refused(self):
+        """Without this the endpoint is an open redirect on the company domain."""
+        response = self.client.get("/e/c/tok-123?u=https://evil.example.com")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(EngagementEvent.objects.filter(kind="click").exists())
+
+    def test_a_tampered_signature_is_refused(self):
+        payload = sign_target("https://emeraldrozalia.ie/shop")
+        response = self.client.get(f"/e/c/tok-123?u={payload[:-3]}xyz")
+        self.assertEqual(response.status_code, 400)
+
+    def test_first_click_fires_the_engagement_event(self):
+        Lead.objects.create(first_name="R", last_name="Eader", email="reader@example.ie")
+        Automation.objects.create(name="Follow up", trigger="engaged",
+                                  trigger_event="lead.engaged", conditions=[],
+                                  actions=["Create owner summary"], status="active")
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.get(f"/e/c/tok-123?u={sign_target('https://example.ie/x')}")
+        self.assertTrue(WorkflowRun.objects.filter(automation__name="Follow up").exists())
+
+
+@override_settings(SITE_URL="http://testserver")
+class OneClickUnsubscribeTests(TestCase):
+    """Gmail and Yahoo require this of bulk senders, and it was absent entirely."""
+
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="R", last_name="Eader",
+                                        email="reader@example.ie", consent_at=timezone.now())
+        self.delivery = MessageDelivery.objects.create(
+            channel="email", recipient="reader@example.ie", template="C",
+            status="sent", token="tok-u", metadata={})
+
+    def test_post_unsubscribes_immediately(self):
+        response = self.client.post("/e/u/tok-u")
+        self.assertEqual(response.status_code, 200)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, "unsubscribed")
+        self.assertIsNone(self.lead.consent_at)
+        self.assertTrue(ConsentEvent.objects.filter(email="reader@example.ie").exists())
+
+    def test_get_only_asks_and_changes_nothing(self):
+        """A mail scanner following the link must not unsubscribe the reader."""
+        response = self.client.get("/e/u/tok-u")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Unsubscribe reader@example.ie?")
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, "new")
+        self.assertIsNotNone(self.lead.consent_at)
+
+    def test_an_unknown_token_is_not_an_error_page(self):
+        response = self.client.get("/e/u/nope")
+        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, "not recognised", status_code=404)
+
+
+@override_settings(SITE_URL="http://testserver")
+class CampaignTrackingTests(TestCase):
+    def setUp(self):
+        Lead.objects.create(first_name="A", last_name="B", email="a@example.ie",
+                            consent_at=timezone.now())
+
+    def test_sent_campaign_carries_tracking_and_unsubscribe(self):
+        campaign = EmailCampaign.objects.create(
+            name="Shop", subject="S", segment="all",
+            content='<p>Hello</p><p><a href="https://emeraldrozalia.ie/shop">Shop now</a></p>')
+        send_campaign(campaign.pk)
+        message = mail.outbox[0]
+        html = message.alternatives[0][0]
+        self.assertIn("/e/o/", html, "the open pixel should be present")
+        self.assertIn("/e/c/", html, "links should be rewritten for click tracking")
+        self.assertNotIn('href="https://emeraldrozalia.ie/shop"', html)
+        self.assertIn("/e/u/", html, "an unsubscribe link belongs in every campaign")
+        self.assertIn("List-Unsubscribe", message.extra_headers)
+        self.assertEqual(message.extra_headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click")
+        self.assertIn("Unsubscribe: http", message.body, "the plain-text part needs it too")
+
+    def test_every_recipient_gets_their_own_token(self):
+        Lead.objects.create(first_name="C", last_name="D", email="c@example.ie",
+                            consent_at=timezone.now())
+        campaign = EmailCampaign.objects.create(name="Shop", subject="S", segment="all",
+                                                content="<p>Hello</p>")
+        send_campaign(campaign.pk)
+        tokens = set(MessageDelivery.objects.values_list("token", flat=True))
+        self.assertEqual(len(tokens), 2)
+        self.assertNotIn("", tokens)
+
+    def test_tracking_does_not_rewrite_mailto_or_anchors(self):
+        campaign = EmailCampaign.objects.create(
+            name="Shop", subject="S", segment="all",
+            content='<a href="mailto:hi@example.ie">Mail</a><a href="#top">Top</a>')
+        send_campaign(campaign.pk)
+        html = mail.outbox[0].alternatives[0][0]
+        self.assertIn('href="mailto:hi@example.ie"', html)
+        self.assertIn('href="#top"', html)
+
+
+class EngagementSegmentTests(TestCase):
+    """Engagement segments are what make a real drip sequence possible."""
+
+    def setUp(self):
+        now = timezone.now()
+        self.opener = Lead.objects.create(first_name="O", last_name="P", email="opener@example.ie",
+                                          consent_at=now)
+        self.clicker = Lead.objects.create(first_name="C", last_name="L", email="clicker@example.ie",
+                                           consent_at=now)
+        self.quiet = Lead.objects.create(first_name="Q", last_name="T", email="quiet@example.ie",
+                                         consent_at=now)
+        MessageDelivery.objects.create(channel="email", recipient="opener@example.ie",
+                                       status="sent", opened_at=now)
+        MessageDelivery.objects.create(channel="email", recipient="clicker@example.ie",
+                                       status="sent", opened_at=now, clicked_at=now)
+
+    def test_opened_and_clicked_select_the_right_people(self):
+        self.assertEqual(resolve_segment("opened")[0].count(), 2)
+        self.assertEqual(resolve_segment("clicked")[0].count(), 1)
+        self.assertEqual(resolve_segment("clicked")[0].first().email, "clicker@example.ie")
+
+    def test_not_opened_is_the_resend_audience(self):
+        queryset, description, unknown = resolve_segment("not opened")
+        self.assertEqual(unknown, [])
+        self.assertEqual([lead.email for lead in queryset], ["quiet@example.ie"])
+
+    def test_engagement_combines_with_the_other_rules(self):
+        Lead.objects.filter(pk=self.clicker.pk).update(company="Celtic Ltd")
+        self.assertEqual(resolve_segment("clicked, wholesale")[0].count(), 1)
+        self.assertEqual(resolve_segment("clicked, retail")[0].count(), 0)
+
+
+class EngagementScoringTests(TestCase):
+    def test_engagement_raises_the_score(self):
+        lead = Lead.objects.create(first_name="A", last_name="B", email="a@example.ie",
+                                   consent_at=timezone.now())
+        automation = Automation.objects.create(name="Score", trigger="t", conditions=[],
+                                               actions=["Assign lead score"], status="active")
+        execute_workflow(automation.pk, {"lead_id": lead.pk})
+        lead.refresh_from_db()
+        self.assertEqual(lead.score, 60)
+
+        MessageDelivery.objects.create(channel="email", recipient="a@example.ie",
+                                       status="sent", clicked_at=timezone.now())
+        execute_workflow(automation.pk, {"lead_id": lead.pk})
+        lead.refresh_from_db()
+        self.assertEqual(lead.score, 80, "a click is worth more than a filled-in field")
+
+
+@override_settings(OPEN_RATE_TARGET=15.0, CLICK_RATE_TARGET=2.0)
+class CampaignReviewTests(TestCase):
+    def _campaign(self, **extra):
+        values = {"name": "C", "subject": "S", "content": "x", "segment": "all",
+                  "status": "sent", "recipients": 100, "opens": 40, "clicks": 10,
+                  "sent_at": timezone.now() - timezone.timedelta(days=2)}
+        values.update(extra)
+        return EmailCampaign.objects.create(**values)
+
+    def test_a_good_campaign_is_reviewed_and_left_alone(self):
+        campaign = self._campaign()
+        result = review_campaign_engagement()
+        self.assertEqual(result, {"reviewed": 1, "flagged": 0})
+        campaign.refresh_from_db()
+        self.assertIsNotNone(campaign.reviewed_at)
+        self.assertFalse(AttentionItem.objects.filter(category="Campaign Performance").exists())
+
+    def test_a_poor_campaign_is_flagged_once(self):
+        self._campaign(opens=3, clicks=0)
+        Automation.objects.create(name="Rescue", trigger="poor",
+                                  trigger_event="campaign.underperforming", conditions=[],
+                                  actions=["Create owner summary"], status="active")
+        with self.captureOnCommitCallbacks(execute=True):
+            first = review_campaign_engagement()
+        self.assertEqual(first["flagged"], 1)
+        self.assertTrue(WorkflowRun.objects.filter(automation__name="Rescue").exists())
+        self.assertEqual(review_campaign_engagement()["reviewed"], 0,
+                         "a campaign is judged once, not every morning forever")
+
+    def test_a_campaign_sent_an_hour_ago_is_too_early_to_judge(self):
+        self._campaign(opens=0, clicks=0, sent_at=timezone.now() - timezone.timedelta(hours=1))
+        self.assertEqual(review_campaign_engagement()["reviewed"], 0)
+
+
+# ===========================================================================
+# Revenue attribution and forecasting
+# ===========================================================================
+
+class AttributionTests(TestCase):
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="A", last_name="B", email="buyer@example.ie",
+                                        consent_at=timezone.now())
+        self.campaign = EmailCampaign.objects.create(name="Autumn", subject="S", content="x",
+                                                     segment="all", status="sent",
+                                                     sent_at=timezone.now())
+
+    def _delivery(self, **extra):
+        values = {"channel": "email", "recipient": "buyer@example.ie", "template": "Autumn",
+                  "status": "sent", "metadata": {"campaign_id": self.campaign.pk}}
+        values.update(extra)
+        return MessageDelivery.objects.create(**values)
+
+    def _conversion(self, **extra):
+        values = {"lead": self.lead, "email": "buyer@example.ie", "amount": 250,
+                  "occurred_at": timezone.now() + timezone.timedelta(seconds=5)}
+        values.update(extra)
+        return Conversion.objects.create(**values)
+
+    def test_a_click_wins_the_credit(self):
+        self._delivery(opened_at=timezone.now())
+        self._delivery(clicked_at=timezone.now(), opened_at=timezone.now())
+        conversion = self._conversion()
+        self.assertEqual(attribute(conversion), self.campaign)
+        conversion.refresh_from_db()
+        self.assertEqual(conversion.attribution, "last-touch")
+        self.assertEqual(conversion.email_campaign, self.campaign)
+
+    def test_a_payment_with_no_prior_campaign_stays_unattributed(self):
+        conversion = self._conversion()
+        self.assertIsNone(attribute(conversion))
+        conversion.refresh_from_db()
+        self.assertEqual(conversion.attribution, "unattributed")
+
+    def test_engagement_older_than_the_window_does_not_claim_credit(self):
+        old = self._delivery(clicked_at=timezone.now())
+        MessageDelivery.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=90))
+        conversion = self._conversion()
+        self.assertIsNone(attribute(conversion, window_days=30))
+
+    def test_the_task_attributes_everything_waiting(self):
+        self._delivery(clicked_at=timezone.now())
+        self._conversion()
+        self._conversion(amount=100)
+        self.assertEqual(attribute_conversions(), {"reviewed": 2, "attributed": 2})
+
+    def test_a_manual_attribution_is_never_overwritten(self):
+        self._delivery(clicked_at=timezone.now())
+        conversion = self._conversion(attribution="manual", email_campaign=None)
+        attribute(conversion)
+        conversion.refresh_from_db()
+        self.assertEqual(conversion.attribution, "manual")
+
+
+class RollUpTests(TestCase):
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="A", last_name="B", email="buyer@example.ie")
+
+    def test_conversions_become_financial_records(self):
+        Conversion.objects.create(lead=self.lead, amount=500, market="Ireland", channel="Email")
+        result = roll_up_attribution()
+        self.assertEqual(result["rolled_up"], 1)
+        record = FinancialRecord.objects.get(generated=True)
+        self.assertEqual(record.revenue, Decimal("500.00"))
+        self.assertEqual(record.customers, 1)
+
+    def test_running_twice_does_not_double_count(self):
+        Conversion.objects.create(lead=self.lead, amount=500, market="Ireland", channel="Email")
+        roll_up_attribution()
+        self.assertEqual(roll_up_attribution()["rolled_up"], 0)
+        self.assertEqual(FinancialRecord.objects.get(generated=True).revenue, Decimal("500.00"))
+
+    def test_a_hand_written_record_is_never_touched(self):
+        manual = FinancialRecord.objects.create(market="Ireland", system="Manual", campaign="X",
+                                                channel="Email", revenue=1000)
+        Conversion.objects.create(lead=self.lead, amount=500, market="Ireland", channel="Email")
+        roll_up_attribution()
+        manual.refresh_from_db()
+        self.assertEqual(manual.revenue, Decimal("1000.00"))
+
+    def test_revenue_with_no_exchange_rate_is_held_back_and_reported(self):
+        """Counting 500 US dollars as 500 euro is the error worth preventing."""
+        Conversion.objects.create(lead=self.lead, amount=500, currency="USD", market="US")
+        result = roll_up_attribution()
+        self.assertEqual(result["rolled_up"], 0)
+        self.assertEqual(result["waiting_on_fx"], 1)
+        self.assertFalse(FinancialRecord.objects.filter(generated=True).exists())
+        item = AttentionItem.objects.get(source="Attribution Engine")
+        self.assertIn("USD", item.recommendation)
+
+
+class CurrencyTests(TestCase):
+    def setUp(self):
+        FxRate.objects.create(base="EUR", currency="USD", rate=Decimal("0.90"),
+                              as_of=timezone.localdate() - timezone.timedelta(days=10))
+        FxRate.objects.create(base="EUR", currency="USD", rate=Decimal("0.80"),
+                              as_of=timezone.localdate())
+
+    def test_conversion_uses_the_rate_that_applied_on_the_day(self):
+        old = to_base(Decimal("100"), "USD", "EUR",
+                      timezone.localdate() - timezone.timedelta(days=5))
+        self.assertEqual(old, Decimal("90.00"))
+        self.assertEqual(to_base(Decimal("100"), "USD", "EUR", timezone.localdate()),
+                         Decimal("80.00"))
+
+    def test_a_missing_rate_returns_none_rather_than_the_raw_number(self):
+        self.assertIsNone(to_base(Decimal("100"), "JPY", "EUR"))
+
+    def test_the_base_currency_needs_no_rate(self):
+        self.assertEqual(to_base(Decimal("100"), "EUR", "EUR"), Decimal("100.00"))
+
+    def test_a_conversion_stores_its_base_amount_on_save(self):
+        conversion = Conversion.objects.create(amount=Decimal("100"), currency="USD")
+        self.assertEqual(conversion.base_amount, Decimal("80.00"))
+
+    def test_a_conversion_without_a_rate_stores_no_base_amount(self):
+        conversion = Conversion.objects.create(amount=Decimal("100"), currency="JPY")
+        self.assertIsNone(conversion.base_amount)
+
+
+class ForecastTests(TestCase):
+    def _history(self, days, revenue=100):
+        today = timezone.localdate()
+        for offset in range(days):
+            FinancialRecord.objects.create(
+                recorded_on=today - timezone.timedelta(days=offset), market="Ireland",
+                system="Test", campaign="C", channel="Email", revenue=revenue + offset)
+
+    def test_a_forecast_is_refused_when_there_is_no_history(self):
+        self._history(3)
+        result = forecast()
+        self.assertFalse(result["available"])
+        self.assertIn("needed", result["reason"])
+
+    def test_a_forecast_is_produced_once_there_is_enough(self):
+        self._history(30)
+        result = forecast(horizon_days=30)
+        self.assertTrue(result["available"])
+        self.assertGreater(result["total"], 0)
+        self.assertIn(result["direction"], {"rising", "falling", "flat"})
+        self.assertGreaterEqual(result["fit"], 0.0)
+
+    def test_the_fit_is_reported_so_a_noisy_trend_is_visible(self):
+        self._history(20)
+        self.assertGreater(forecast()["fit"], 0.9, "a clean ramp should fit almost perfectly")
+
+
+class RevenueReportingTests(TestCase):
+    def setUp(self):
+        self.lead = Lead.objects.create(first_name="A", last_name="B", email="buyer@example.ie")
+        FinancialRecord.objects.create(market="Ireland", system="Email Marketing", campaign="C",
+                                       channel="Email", revenue=1000, cost=250, leads=10, customers=4)
+        Conversion.objects.create(lead=self.lead, amount=400)
+        Conversion.objects.create(lead=self.lead, amount=200)
+
+    def test_channel_performance_reports_roi(self):
+        row = channel_performance()[0]
+        self.assertEqual(row["channel"], "Email")
+        self.assertEqual(row["profit"], Decimal("750.00"))
+        self.assertEqual(row["roi"], 300.0)
+
+    def test_lifetime_value_counts_a_repeat_buyer_once(self):
+        value = lifetime_value()
+        self.assertEqual(value["customers"], 1)
+        self.assertEqual(value["revenue"], Decimal("600.00"))
+        self.assertEqual(value["ltv"], Decimal("600.00"))
+        self.assertEqual(value["repeat_customers"], 1)
+
+    def test_attribution_gap_is_stated_rather_than_hidden(self):
+        gap = attribution_gap()
+        self.assertEqual(gap["total"], Decimal("600.00"))
+        self.assertEqual(gap["unattributed"], Decimal("600.00"))
+        self.assertEqual(gap["coverage"], 0)
+
+    def test_cohorts_group_leads_by_the_month_they_arrived(self):
+        rows = cohorts()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["leads"], 1)
+        self.assertEqual(rows[0]["customers"], 1)
+        self.assertEqual(rows[0]["revenue"], Decimal("600.00"))
+
+    def test_the_revenue_page_renders(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        response = self.client.get("/revenue/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "revenue_center.html")
+        self.assertContains(response, "LIFETIME VALUE")
+
+
+class WeeklyReviewTests(TestCase):
+    def test_the_review_is_sent_and_readable(self):
+        lead = Lead.objects.create(first_name="A", last_name="B", email="buyer@example.ie")
+        Conversion.objects.create(lead=lead, amount=750)
+        result = send_weekly_review()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("750", mail.outbox[0].subject)
+        self.assertTrue(mail.outbox[0].alternatives)
+        self.assertEqual(result["conversions"], 1)
+        self.assertTrue(AuditLog.objects.filter(event="weekly_review.sent").exists())
+
+    def test_it_still_sends_with_no_data_at_all(self):
+        """The first Monday of a new install must not raise."""
+        send_weekly_review()
+        self.assertEqual(len(mail.outbox), 1)
+
+
+# ===========================================================================
+# Owner alerting and one-click approvals
+# ===========================================================================
+
+@override_settings(SITE_URL="http://testserver")
+class CriticalAlertTests(TestCase):
+    def _item(self, **extra):
+        values = {"severity": "critical", "category": "High-Risk Decision", "title": "Budget overrun",
+                  "confidence": 90, "source": "Campaign Engine", "recommendation": "Pause the campaign"}
+        values.update(extra)
+        return AttentionItem.objects.create(**values)
+
+    def test_a_critical_item_is_pushed_out_immediately(self):
+        item = self._item()
+        result = dispatch_critical_alerts()
+        self.assertEqual(result["alerted"], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Budget overrun", mail.outbox[0].subject)
+        self.assertIn("/act/", mail.outbox[0].alternatives[0][0])
+        item.refresh_from_db()
+        self.assertIsNotNone(item.alerted_at)
+
+    def test_the_same_item_is_never_alerted_twice(self):
+        self._item()
+        dispatch_critical_alerts()
+        self.assertEqual(dispatch_critical_alerts()["alerted"], 0)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_a_resolved_item_is_not_alerted(self):
+        self._item(status="resolved")
+        self.assertEqual(dispatch_critical_alerts()["alerted"], 0)
+
+    def test_lesser_severities_wait_for_the_digest(self):
+        self._item(severity="medium")
+        self.assertEqual(dispatch_critical_alerts()["alerted"], 0)
+
+
+@override_settings(SITE_URL="http://testserver")
+class OwnerActionLinkTests(TestCase):
+    def setUp(self):
+        self.item = AttentionItem.objects.create(
+            severity="critical", category="High-Risk Decision", title="Budget overrun",
+            confidence=90, source="Campaign Engine", recommendation="Pause it")
+        self.url = "/act/" + action_token("attention", self.item.pk, "resolve")
+
+    def test_a_get_asks_before_changing_anything(self):
+        """Mail scanners fetch every link; a mutating GET would let one decide."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "CONFIRM RESOLVE")
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, "pending")
+
+    def test_a_post_applies_the_action_and_audits_it(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, "resolved")
+        entry = AuditLog.objects.get(event="attention.resolve")
+        self.assertEqual(entry.new_values["record_id"], self.item.pk)
+        self.assertEqual(entry.new_values["via"], "signed link")
+
+    def test_a_tampered_link_is_refused(self):
+        response = self.client.post(self.url[:-4] + "xxxx")
+        self.assertEqual(response.status_code, 400)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, "pending")
+
+    def test_an_expired_link_is_refused(self):
+        payload = action_token("attention", self.item.pk, "resolve")
+        self.assertIsNone(resolve_token(payload, max_age=-1))
+
+    def test_a_decision_can_be_approved_from_a_message(self):
+        decision = AiDecision.objects.create(
+            decision_id="ER-TEST", engine="E", title="Raise budget", recommendation="Do it",
+            confidence=80, impact="high", risk_score=20, governance_level="review")
+        self.client.post("/act/" + action_token("decision", decision.pk, "approve"))
+        decision.refresh_from_db()
+        self.assertEqual(decision.status, "approved")
+        self.assertIsNotNone(decision.decided_at)
+
+
+@override_settings(ESCALATION_STEPS=[4, 24, 72])
+class EscalationTests(TestCase):
+    def _overdue(self, hours, severity="low"):
+        return AttentionItem.objects.create(
+            severity=severity, category="Governance", title=f"Late by {hours}h",
+            confidence=50, source="Test", recommendation="Act",
+            due_at=timezone.now() - timezone.timedelta(hours=hours))
+
+    def test_an_item_just_past_its_deadline_is_not_escalated_yet(self):
+        self._overdue(1)
+        self.assertEqual(escalate_attention()["escalated"], 0)
+
+    def test_each_step_raises_the_severity_once(self):
+        item = self._overdue(5)
+        self.assertEqual(escalate_attention()["escalated"], 1)
+        item.refresh_from_db()
+        self.assertEqual(item.severity, "medium")
+        self.assertEqual(item.escalation_level, 1)
+        self.assertEqual(escalate_attention()["escalated"], 0, "one step, one escalation")
+
+    def test_a_long_ignored_item_climbs_to_critical_and_re_arms_the_alert(self):
+        item = self._overdue(100, severity="high")
+        AttentionItem.objects.filter(pk=item.pk).update(alerted_at=timezone.now())
+        escalate_attention()
+        item.refresh_from_db()
+        self.assertEqual(item.severity, "critical")
+        self.assertIsNone(item.alerted_at, "reaching critical should page the owner again")
+        self.assertEqual(dispatch_critical_alerts()["alerted"], 1)
+
+    def test_escalation_fires_its_event(self):
+        Automation.objects.create(name="Escalated", trigger="e",
+                                  trigger_event="attention.escalated", conditions=[],
+                                  actions=["Create owner summary"], status="active")
+        self._overdue(5)
+        with self.captureOnCommitCallbacks(execute=True):
+            escalate_attention()
+        self.assertTrue(WorkflowRun.objects.filter(automation__name="Escalated").exists())
+
+    def test_a_resolved_item_stops_climbing(self):
+        item = self._overdue(100)
+        AttentionItem.objects.filter(pk=item.pk).update(status="resolved")
+        self.assertEqual(escalate_attention()["escalated"], 0)
+
+
+class SlaDeadlineTests(TestCase):
+    def test_an_sla_becomes_a_real_deadline(self):
+        item = AttentionItem.objects.create(
+            severity="medium", category="X", title="With SLA", confidence=50,
+            source="Test", recommendation="Act", sla_hours=8)
+        self.assertIsNotNone(item.due_at)
+        self.assertGreater(item.due_at, timezone.now())
+
+    def test_an_explicit_deadline_wins(self):
+        chosen = timezone.now() + timezone.timedelta(days=3)
+        item = AttentionItem.objects.create(
+            severity="medium", category="X", title="Explicit", confidence=50,
+            source="Test", recommendation="Act", sla_hours=8, due_at=chosen)
+        self.assertEqual(item.due_at, chosen)
+
+
+# ===========================================================================
+# Multi-entity foundation
+# ===========================================================================
+
+class TenancyTests(TestCase):
+    """One entity behaves exactly as before; a second turns isolation on."""
+
+    def setUp(self):
+        cache.clear()
+        self.owner = User.objects.create_superuser("owner@example.ie",
+                                                   password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        self.first = Organisation.objects.get(code="ER")
+
+    def tearDown(self):
+        # The entity count is cached, and the cache outlives the test rollback.
+        cache.clear()
+
+    def _second(self):
+        return Organisation.objects.create(name="Rozalia Italia", code="IT", country="IT",
+                                           base_currency="EUR")
+
+    def test_the_migration_created_the_founding_entity(self):
+        self.assertEqual(self.first.name, "Emerald Rozalia Limited")
+        self.assertEqual(self.first.base_currency, "EUR")
+        self.assertFalse(is_multi_entity())
+
+    def test_with_one_entity_nothing_is_scoped_away(self):
+        lead = Lead.objects.create(first_name="A", last_name="B", email="a@example.ie")
+        # Forced past the stamping signal, to prove scoping itself cannot hide a
+        # record that somehow reached the database without an entity.
+        Lead.objects.filter(pk=lead.pk).update(organisation=None)
+        response = self.client.get("/leads/")
+        self.assertEqual(response.context["total_count"], 1,
+                         "a single entity must never hide an unassigned record")
+
+    def test_every_new_record_is_stamped_with_an_entity(self):
+        lead = Lead.objects.create(first_name="A", last_name="B", email="a@example.ie")
+        self.assertEqual(lead.organisation, self.first)
+
+    def test_a_record_raised_by_a_workflow_is_not_orphaned(self):
+        """The owner-summary action runs in Celery, with no request to read."""
+        automation = Automation.objects.create(name="Summarise", trigger="t", conditions=[],
+                                               actions=["Create owner summary"], status="active")
+        execute_workflow(automation.pk, {})
+        item = AttentionItem.objects.get(source="Automation Engine")
+        self.assertEqual(item.organisation, self.first)
+
+    def test_a_second_entity_isolates_the_records(self):
+        second = self._second()
+        Lead.objects.create(first_name="I", last_name="E", email="ie@example.ie",
+                            organisation=self.first)
+        Lead.objects.create(first_name="I", last_name="T", email="it@example.it",
+                            organisation=second)
+        self.assertTrue(is_multi_entity())
+        response = self.client.get("/leads/")
+        self.assertEqual(response.context["total_count"], 1)
+        self.assertEqual(response.context["rows"][0]["pk"],
+                         Lead.objects.get(email="ie@example.ie").pk)
+
+    def test_switching_entity_changes_what_is_listed(self):
+        second = self._second()
+        Lead.objects.create(first_name="I", last_name="E", email="ie@example.ie",
+                            organisation=self.first)
+        Lead.objects.create(first_name="I", last_name="T", email="it@example.it",
+                            organisation=second)
+        self.client.post("/organisation/switch", {"organisation": second.pk, "next": "/leads/"})
+        response = self.client.get("/leads/")
+        self.assertEqual(response.context["rows"][0]["pk"],
+                         Lead.objects.get(email="it@example.it").pk)
+
+    def test_the_switcher_will_not_redirect_off_site(self):
+        second = self._second()
+        response = self.client.post("/organisation/switch",
+                                    {"organisation": second.pk, "next": "https://evil.example.com/"})
+        self.assertEqual(response["Location"], "/")
+
+    def test_a_new_record_joins_the_entity_being_viewed(self):
+        second = self._second()
+        self.client.post("/organisation/switch", {"organisation": second.pk})
+        self.client.post("/leads/", {"action": "create", "first_name": "New", "last_name": "Lead",
+                                     "email": "new@example.it", "phone": "", "company": "",
+                                     "market": "Italy", "source": "Website", "status": "new",
+                                     "score": 0})
+        self.assertEqual(Lead.objects.get(email="new@example.it").organisation, second)
+
+    def test_the_tenant_key_is_not_an_editable_field(self):
+        names = {item["field"].name for item in self.client.get("/leads/").context["form_fields"]}
+        self.assertNotIn("organisation", names)
+
+    def test_the_entity_column_appears_only_when_it_means_something(self):
+        # `columns` carries the raw verbose names; the template title-cases them.
+        self.assertNotIn("organisation", self.client.get("/leads/").context["columns"])
+        self._second()
+        self.assertIn("organisation", self.client.get("/leads/").context["columns"])
+
+    def test_the_entity_register_is_owner_only(self):
+        User.objects.create_user("staff@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="staff@example.ie", password="Strong-Test-Password-123")
+        for slug in ["organisations", "fx-rates"]:
+            self.assertEqual(self.client.get(f"/{slug}/").status_code, 403, slug)
+
+    def test_background_work_still_lands_in_an_entity(self):
+        """A Celery-created record has no request, so it must fall back to the default."""
+        item = assign(AttentionItem(severity="low", category="X", title="From a task",
+                                    confidence=1, source="Task", recommendation="none"))
+        self.assertEqual(item.organisation, self.first)
+
+
+class SecurityHeaderTests(TestCase):
+    def test_the_referrer_policy_is_actually_sent(self):
+        """It was set under a name Django does not read, so it never was."""
+        response = self.client.get("/up")
+        self.assertEqual(response["Referrer-Policy"], "strict-origin-when-cross-origin")
+
+
+class UnsubscribeRateLimitTests(TestCase):
+    def test_the_public_endpoint_is_throttled(self):
+        Lead.objects.create(first_name="A", last_name="B", email="a@example.ie")
+        statuses = [self.client.post("/api/consent/unsubscribe", data='{"email":"a@example.ie"}',
+                                     content_type="application/json").status_code
+                    for _ in range(40)]
+        self.assertIn(429, statuses, "an unauthenticated endpoint that confirms membership "
+                                     "of the list should not be free to enumerate")

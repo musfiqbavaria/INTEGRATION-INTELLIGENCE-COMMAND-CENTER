@@ -578,8 +578,8 @@ docker compose up -d --force-recreate app worker scheduler
 
 ## 10. Known defects — review before go-live
 
-Reviewed and fixed on 2026-08-16. Each item below has a regression test in
-`core/tests.py` (27 tests, all passing).
+Reviewed and fixed on 2026-08-16, extended on 2026-08-17. Each item below has a
+regression test in `core/tests.py` (179 tests, all passing).
 
 **Fixed — security**
 
@@ -619,12 +619,92 @@ Reviewed and fixed on 2026-08-16. Each item below has a regression test in
   back to a default published in this repository, and never resets an existing
   owner's password.
 
+**Fixed — 2026-08-17**
+
+- Email open and click rates were rendered on the Executive Dashboard but
+  nothing ever incremented `EmailCampaign.opens` or `.clicks`. Both are now
+  measured from a tracking pixel and signed click redirects.
+- Campaign mail carried no unsubscribe link and no `List-Unsubscribe` header.
+  Gmail and Yahoo require one-click unsubscribe from bulk senders; both the
+  header and a footer link are now present on every campaign and workflow email.
+- `Referrer-Policy` was configured as `REFERRER_POLICY`, which is not a Django
+  setting, so the intended policy was never sent. Renamed to
+  `SECURE_REFERRER_POLICY`.
+- The dashboard's "Auto-executed safe" figure read `cards.4`, the governance
+  card, and therefore showed the wrong count under that label.
+- WhatsApp `sent`/`delivered`/`read` counters were read-then-written, losing
+  increments when Meta delivered receipts in bursts. Now `F()` expressions.
+- `/api/consent/unsubscribe` was unauthenticated and unthrottled while its reply
+  confirmed whether an address was on the list. Now rate limited to 30/min/IP.
+
 **Still outstanding**
 
 - Some dashboard panels remain presentational: the decision pipeline's decay
   curve, radar and forecast-trend blocks are illustrations, not computed series.
   Every KPI tile, the risk matrix, summary cards and the attention queue are
-  database-backed.
+  database-backed, and `/revenue/` is entirely computed.
 - Sparklines and the "vs Last 30 Days" deltas are computed correctly but need
   more than one `FinancialRecord` before they show a meaningful trend.
 - `WHATSAPP_BUSINESS_ACCOUNT_ID` is read into settings and used nowhere.
+- `USE_I18N` is on and `LocaleMiddleware` is installed, but no translation
+  catalogues are shipped. Per-entity `locale` is stored and not yet applied to
+  rendering; adding `locale/<code>/LC_MESSAGES` catalogues is the remaining step.
+- Apple Mail Privacy Protection pre-fetches images, so open rates from Apple
+  clients are inflated. Known security scanners are filtered out of the counts;
+  MPP is not distinguishable from a genuine open and is not filtered.
+
+---
+
+## 11. The 2026-08-17 update
+
+### New environment variables
+
+All optional — the defaults in `config/settings.py` are safe — **except
+`SITE_URL`**, which must be set or every tracked link in an outgoing campaign
+points at the wrong host.
+
+```bash
+SITE_URL=https://emeraldrozalia.ie   # required for tracking and action links
+OPEN_RATE_TARGET=15.0
+CLICK_RATE_TARGET=2.0
+ATTRIBUTION_WINDOW_DAYS=30
+ESCALATION_STEPS=4,24,72
+OWNER_WHATSAPP=                       # digits only; blank disables WhatsApp alerts
+```
+
+### Migrations
+
+Two: `0006` adds the engagement, conversion, organisation and FX tables plus
+sixteen indexes, and `0007` creates the founding organisation and attaches every
+existing record to it. `0007` is reversible.
+
+`0006` adds indexes to `messagedelivery`, `auditlog` and `lead`, which locks
+those tables while they build. On a large database run the migration during a
+quiet window, or create the indexes concurrently by hand first.
+
+### New scheduled tasks
+
+The `scheduler` container picks these up on restart — no extra service needed.
+
+| Task | When | Effect |
+|---|---|---|
+| `dispatch_critical_alerts` | every 2 min | Emails critical items the moment they are raised |
+| `escalate_attention` | every 15 min | Climbs the severity ladder for ignored deadlines |
+| `attribute_conversions` | every 10 min | Credits conversions to the campaign that earned them |
+| `roll_up_attribution` | 02:15 daily | Folds conversions into the financial ledger |
+| `review_campaign_engagement` | 09:30 daily | Judges each campaign once, a day after sending |
+| `send_weekly_review` | Mondays 07:30 | Business review email alongside the daily brief |
+
+### Verify after deploying
+
+```bash
+docker compose exec app python manage.py migrate
+docker compose exec app python manage.py check --deploy
+curl -fsS https://emeraldrozalia.ie/robots.txt | grep -E '/e/|/act/'   # both disallowed
+curl -sI https://emeraldrozalia.ie/up | grep -i referrer-policy         # now actually sent
+```
+
+Then send one campaign to yourself and confirm three things in the received
+message: the unsubscribe link in the footer works, your mail client shows its
+own unsubscribe button (the `List-Unsubscribe` header), and `/revenue/` shows a
+non-zero open rate once you have opened it.

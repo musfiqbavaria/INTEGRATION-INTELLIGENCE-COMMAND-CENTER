@@ -1,0 +1,52 @@
+{% load static %}<!doctype html>
+<html lang="en-IE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex,nofollow">
+<title>Unsubscribe — Emerald Rozalia Limited</title>
+<link rel="stylesheet" href="{% static 'css/public.css' %}">
+</head>
+<body>
+
+<header class="site-head">
+  <span class="brand">
+    <img src="{% static 'images/emerald-rozalia-limited-logo.png' %}" alt="Emerald Rozalia Limited" width="180" height="50">
+  </span>
+</header>
+
+<main>
+  <section class="answers single">
+    <article>
+      {% if unknown %}
+      <h1>This link is not recognised</h1>
+      <p>It may have already been used, or the address may have been removed from our list some time ago.</p>
+      <p class="meta">Nothing further is needed from you. If you still receive email from us, reply to any
+        message and we will remove you by hand.</p>
+
+      {% elif done %}
+      <h1>You have been unsubscribed</h1>
+      <p><b>{{ email }}</b> has been removed from our marketing list. You will not receive further campaigns.</p>
+      <p class="meta">Your consent record has been updated and the change is logged. Transactional messages
+        about an order you have placed may still reach you.</p>
+
+      {% else %}
+      <h1>Unsubscribe {{ email }}?</h1>
+      <p>Confirm and we will stop sending marketing email to this address.</p>
+      <form method="post">{% csrf_token %}
+        <button class="confirm">Yes, unsubscribe me</button>
+      </form>
+      <p class="meta">We ask because mail security scanners open every link in a message, and we would rather
+        not remove you because software followed a link on your behalf.</p>
+      {% endif %}
+    </article>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <p><b>Emerald Rozalia Limited</b> · Limerick, Ireland · <a href="tel:+353899788187">089 978 8187</a></p>
+</footer>
+
+</body>
+</html>

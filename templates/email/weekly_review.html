@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Weekly business review</title></head>
+<body style="margin:0;padding:24px;background:#020a12;color:#edf3f4;font:14px/1.55 Segoe UI,Arial,sans-serif">
+<div style="max-width:680px;margin:0 auto">
+
+  <h1 style="margin:0 0 4px;font-size:19px;color:#00d56f">Weekly business review</h1>
+  <p style="margin:0 0 20px;color:#aab8c0;font-size:12px">
+    Last {{ weeks }} week{{ weeks|pluralize }} · generated {{ generated_at|date:"j M Y, H:i" }} (Europe/Dublin)
+  </p>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:22px">
+    <tr>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#00d56f">€ {{ revenue|floatformat:0 }}</div>
+        <div style="font-size:11px;color:#aab8c0">REVENUE{% if revenue_change %} · {{ revenue_change }}% vs prior{% endif %}</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#129ee8">{{ conversions }}</div>
+        <div style="font-size:11px;color:#aab8c0">CONVERSIONS</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#edf3f4">{{ new_leads }}</div>
+        <div style="font-size:11px;color:#aab8c0">NEW LEADS</div>
+      </td>
+      <td style="width:8px"></td>
+      <td style="padding:12px;border:1px solid #344651;border-radius:8px;background:#04101b">
+        <div style="font-size:22px;color:#e5aa00">{{ open_items }}</div>
+        <div style="font-size:11px;color:#aab8c0">OPEN ITEMS</div>
+      </td>
+    </tr>
+  </table>
+
+  {% if channels %}
+  <h2 style="font-size:14px;color:#00d56f;margin:0 0 8px">Where the money came from</h2>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:22px;font-size:13px">
+    <tr style="color:#aab8c0;font-size:11px;text-align:left">
+      <th style="padding:4px 0">CHANNEL</th><th style="padding:4px 0;text-align:right">REVENUE</th>
+      <th style="padding:4px 0;text-align:right">COST</th><th style="padding:4px 0;text-align:right">ROI</th>
+    </tr>
+    {% for row in channels %}
+    <tr style="border-top:1px solid #253742">
+      <td style="padding:7px 0">{{ row.channel }}</td>
+      <td style="padding:7px 0;text-align:right">€ {{ row.revenue|floatformat:0 }}</td>
+      <td style="padding:7px 0;text-align:right;color:#aab8c0">€ {{ row.cost|floatformat:0 }}</td>
+      <td style="padding:7px 0;text-align:right;color:{% if row.roi and row.roi > 0 %}#00d56f{% else %}#aab8c0{% endif %}">
+        {% if row.roi is not None %}{{ row.roi }}%{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if campaigns %}
+  <h2 style="font-size:14px;color:#129ee8;margin:0 0 8px">Campaign performance</h2>
+  <ul style="margin:0 0 22px;padding-left:18px">
+    {% for row in campaigns %}
+    <li style="margin-bottom:6px">
+      <b>{{ row.campaign.name }}</b>
+      <span style="color:#aab8c0">— {{ row.open_rate }}% open, {{ row.click_rate }}% click,
+        € {{ row.revenue|floatformat:0 }} attributed</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2 style="font-size:14px;color:#edf3f4;margin:0 0 8px">Customer value</h2>
+  <p style="margin:0 0 22px;color:#aab8c0">
+    {{ ltv.customers }} paying customer{{ ltv.customers|pluralize }} ·
+    lifetime value {% if ltv.ltv %}€ {{ ltv.ltv|floatformat:0 }}{% else %}—{% endif %} ·
+    value per lead {% if ltv.value_per_lead %}€ {{ ltv.value_per_lead|floatformat:2 }}{% else %}—{% endif %} ·
+    {{ ltv.repeat_rate }}% buy again
+  </p>
+
+  <h2 style="font-size:14px;color:#e5aa00;margin:0 0 8px">Next {{ forecast.horizon_days }} days</h2>
+  {% if forecast.available %}
+  <p style="margin:0 0 6px">
+    Projected <b>€ {{ forecast.total|floatformat:0 }}</b> ({{ forecast.direction }},
+    about € {{ forecast.daily_average|floatformat:0 }} a day)
+  </p>
+  <p style="margin:0 0 22px;color:#aab8c0;font-size:12px">
+    Straight-line trend over {{ forecast.points }} days of history, fit {{ forecast.fit }}.
+    {% if forecast.fit < 0.3 %}That fit is weak — treat the figure as a direction, not a number.{% endif %}
+  </p>
+  {% else %}
+  <p style="margin:0 0 22px;color:#aab8c0">Not enough history yet — {{ forecast.reason }}.</p>
+  {% endif %}
+
+  {% if gap.total %}
+  <h2 style="font-size:14px;color:#aab8c0;margin:0 0 8px">Attribution coverage</h2>
+  <p style="margin:0 0 22px;color:#aab8c0">
+    {{ gap.coverage }}% of revenue is traceable to a campaign.
+    {% if gap.unattributed %}€ {{ gap.unattributed|floatformat:0 }} is not — no campaign engagement was found
+    within the attribution window before those payments.{% endif %}
+  </p>
+  {% endif %}
+
+  <p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #344651;color:#aab8c0;font-size:12px">
+    Emerald Rozalia Limited · Marketing ERP Command Center · Limerick, Ireland
+  </p>
+
+</div>
+</body>
+</html>

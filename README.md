@@ -5,13 +5,54 @@ Production full-stack rebuild of the Laravel command centre using Django 6, ASGI
 ## Included
 
 - Exact Emerald Rozalia dark command-centre visual system and logo
-- Owner dashboard and 17 operational modules
+- Owner dashboard and 20 operational modules
 - Leads, campaigns, email, content, AEO, finance, automation and WhatsApp data
+- Email engagement tracking: opens, clicks, RFC 8058 one-click unsubscribe
+- Revenue attribution, cohorts, lifetime value and a stated-confidence forecast
+- Immediate critical alerts with signed one-click approve/resolve links
+- Multi-entity foundation: organisations, multi-currency with dated FX rates
 - Live OpenAI orchestration with structured decisions, confidence, risk and owner approval
 - SMTP checks, WhatsApp webhook verification and GDPR unsubscribe endpoint
 - Authentication, CSRF, secure cookies, CSP/HSTS, audit logs and admin
 - PostgreSQL, Redis, Celery worker/scheduler, Gunicorn/Uvicorn and Docker Compose
 - Caddy HTTPS configuration, health endpoint and backup script
+
+## Engagement, attribution, alerting and entities
+
+Four capabilities added on top of the original console. Each is covered by tests
+in `core/tests.py`; run `python manage.py test core` to exercise all 179.
+
+**Engagement tracking** — `EmailCampaign.opens` and `.clicks` were shown on the
+dashboard as rates but nothing ever incremented them. Every campaign message now
+carries a per-recipient tracking pixel, click redirects with a **signed**
+destination (so the endpoint cannot be used as an open redirect), and
+`List-Unsubscribe` headers that Gmail and Yahoo require of bulk senders. Opens
+and clicks feed three new segments — `opened`, `clicked`, `not opened` — which is
+what makes a resend-to-non-openers sequence possible, plus the `lead.engaged`
+event and a behaviour component in lead scoring.
+
+**Revenue attribution** — the new `Conversion` model links a payment to a lead
+and to the campaign that last engaged them, within a configurable window.
+A nightly roll-up folds conversions into `FinancialRecord`, so the Executive
+Dashboard's reconciliation warnings resolve themselves. `/revenue/` reports
+channel ROI, per-campaign revenue, cohorts, lifetime value and a straight-line
+forecast that publishes its own r² and refuses to draw a line through too few
+points. Revenue in a currency with no FX rate on file is **held out** of every
+report rather than counted as euro, and the owner is told which rate is missing.
+
+**Owner alerting** — critical items are emailed within two minutes instead of
+waiting for the 07:00 digest, with signed links to resolve or dismiss. An
+escalation ladder (`ESCALATION_STEPS`, default 4/24/72 hours past deadline)
+raises severity for anything ignored, and reaching critical re-arms the alert.
+Action links confirm before acting: a `GET` only ever renders a form, because
+mail security appliances fetch every URL in an inbound message.
+
+**Multi-entity foundation** — every business record now carries an
+`organisation`. With one entity the tenant key is a no-op and nothing can be
+hidden; adding a second turns strict isolation on everywhere at once and reveals
+the sidebar entity switcher. Currency conversion uses the rate dated on or
+before the record's own date, so loading today's rate never moves last month's
+reported revenue.
 
 ## Local development
 
@@ -53,6 +94,12 @@ Run the tests:
 ```bash
 python manage.py test --settings=config.settings_local
 ```
+
+The local settings override `PASSWORD_HASHERS` with MD5. The suite creates a
+superuser in most `setUp` methods and the production hasher is deliberately
+slow, which was three minutes of a three-minute run; the override brings the
+full 179 tests to about two seconds. It applies to local work and tests only —
+`config/settings.py` keeps Django's default hasher.
 
 To avoid repeating `--settings`, export it once per shell:
 

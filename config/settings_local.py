@@ -46,3 +46,12 @@ SECURE_PROXY_SSL_HEADER = None
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# Tracking pixels and unsubscribe links must point at this machine, not at the
+# live site, or a locally sent test would record engagement in production.
+SITE_URL = "http://127.0.0.1:8000"
+
+# 4. Speed. The suite creates a superuser in most setUp methods, and the
+#    production hasher makes that deliberately slow — it was three minutes of a
+#    three-and-a-bit minute run. Only ever correct for tests and local work.
+PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

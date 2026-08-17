@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Critical: {{ item.title }}</title></head>
+<body style="margin:0;padding:24px;background:#020a12;color:#edf3f4;font:14px/1.55 Segoe UI,Arial,sans-serif">
+<div style="max-width:620px;margin:0 auto">
+
+  <p style="margin:0 0 4px;font:700 11px/1 Arial,sans-serif;letter-spacing:.14em;color:#f52222">
+    {{ item.severity|upper }} · {{ item.category }}
+  </p>
+  <h1 style="margin:0 0 14px;font-size:20px;color:#edf3f4">{{ item.title }}</h1>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+         style="margin-bottom:18px;border:1px solid #344651;border-radius:8px;background:#04101b">
+    <tr><td style="padding:14px 16px">
+      <p style="margin:0 0 10px;color:#aab8c0;font-size:12px">RECOMMENDATION</p>
+      <p style="margin:0">{{ item.recommendation }}</p>
+    </td></tr>
+  </table>
+
+  <p style="margin:0 0 18px;color:#aab8c0;font-size:13px">
+    Raised by {{ item.source }} · {{ item.confidence }}% confidence{% if item.impact %} ·
+    impact € {{ item.impact|floatformat:0 }}{% endif %}{% if item.due_at %} ·
+    due {{ item.due_at|date:"j M, H:i" }}{% endif %}
+  </p>
+
+  <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+    <td style="padding-right:8px">
+      <a href="{{ resolve_url }}"
+         style="display:inline-block;padding:11px 20px;border-radius:6px;background:#078449;color:#fff;
+                font-weight:600;text-decoration:none">Mark resolved</a>
+    </td>
+    <td>
+      <a href="{{ dismiss_url }}"
+         style="display:inline-block;padding:11px 20px;border-radius:6px;border:1px solid #42525d;
+                color:#aab8c0;text-decoration:none">Dismiss</a>
+    </td>
+  </tr></table>
+
+  <p style="margin:18px 0 0;color:#6c7d87;font-size:12px">
+    Both links ask you to confirm before anything changes, and expire after seven days.
+  </p>
+
+  <p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #344651;color:#aab8c0;font-size:12px">
+    Emerald Rozalia Limited · Marketing ERP Command Center · sent {{ generated_at|date:"j M Y, H:i" }}
+  </p>
+
+</div>
+</body>
+</html>
