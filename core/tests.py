@@ -8,9 +8,9 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from .models import (
-    AeoEntry, AttentionItem, Automation, AuditLog, ConsentEvent, EmailCampaign,
-    Integration, IntegrationCheck, Lead, MessageDelivery, Setting, WhatsAppTemplate,
-    WorkflowRun,
+    AeoEntry, AiDecision, AttentionItem, Automation, AuditLog, Campaign, ConsentEvent,
+    ContentItem, EmailCampaign, FinancialRecord, Integration, IntegrationCheck, Lead,
+    MessageDelivery, Setting, SupportTicket, WhatsAppTemplate, WorkflowRun,
 )
 from .segments import resolve as resolve_segment
 from .tasks import (build_digest, execute_workflow, expire_stale_consent, flag_dormant_leads,
@@ -850,3 +850,172 @@ class CsvImportTests(TestCase):
     def test_import_is_only_offered_on_leads(self):
         self.assertTrue(self.client.get("/leads/").context["can_import"])
         self.assertFalse(self.client.get("/campaigns/").context["can_import"])
+
+
+class DashboardSplitTests(TestCase):
+    """`/` is the owner overview; `/command-center/` is the operational console.
+
+    The two were the same view. Merging them meant the owner had to read an
+    operations console to answer "how is the business doing".
+    """
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+
+    def test_both_dashboards_render_from_their_own_template(self):
+        executive = self.client.get("/")
+        command = self.client.get("/command-center/")
+        self.assertEqual(executive.status_code, 200)
+        self.assertEqual(command.status_code, 200)
+        self.assertTemplateUsed(executive, "executive_dashboard.html")
+        self.assertTemplateUsed(command, "dashboard.html")
+
+    def test_disagreeing_totals_are_reported_not_hidden(self):
+        Lead.objects.create(first_name="A", last_name="B", email="a@example.ie")
+        FinancialRecord.objects.create(market="Ireland", system="Email Marketing",
+                                       campaign="C", channel="Email", revenue=1000,
+                                       cost=250, leads=42, customers=7)
+        response = self.client.get("/")
+        self.assertEqual(len(response.context["reconciliations"]), 1)
+        self.assertContains(response, "DATA RECONCILIATION")
+
+    def test_no_warning_when_the_figures_agree(self):
+        Lead.objects.create(first_name="A", last_name="B", email="a@example.ie")
+        FinancialRecord.objects.create(market="Ireland", system="Email Marketing",
+                                       campaign="C", channel="Email", revenue=1000,
+                                       cost=250, leads=1, customers=1)
+        response = self.client.get("/")
+        self.assertEqual(response.context["reconciliations"], [])
+        self.assertNotContains(response, "DATA RECONCILIATION")
+
+
+class SystemOwnedFieldTests(TestCase):
+    """Derived outcomes must not be settable through generic CRUD.
+
+    A hand-typed revenue or SEO score is indistinguishable from a measured one
+    once it reaches analytics, so these fields are removed from the form.
+    """
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+
+    def _form_field_names(self, slug):
+        return {i["field"].name for i in self.client.get(f"/{slug}/").context["form_fields"]}
+
+    def test_campaign_form_offers_only_the_descriptive_fields(self):
+        self.assertEqual(self._form_field_names("campaigns"), {"name", "channel", "status"})
+
+    def test_content_form_excludes_the_derived_scores(self):
+        names = self._form_field_names("content")
+        self.assertNotIn("seo_score", names)
+        self.assertNotIn("ai_confidence", names)
+        self.assertIn("title", names)
+
+    def test_posted_revenue_is_ignored_when_creating_a_campaign(self):
+        self.client.post("/campaigns/", {"action": "create", "name": "Injected", "channel": "Email",
+                                         "status": "active", "revenue": "999999", "cost": "1",
+                                         "audience_size": "500"})
+        campaign = Campaign.objects.get(name="Injected")
+        self.assertEqual(campaign.revenue, 0)
+        self.assertEqual(campaign.cost, 0)
+        self.assertEqual(campaign.audience_size, 0)
+
+
+class ReadOnlyModuleTests(TestCase):
+    """Finance and AI Intelligence are reports, not editable record sets."""
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+
+    def test_finance_and_intelligence_offer_no_form(self):
+        for slug in ["finance", "intelligence"]:
+            response = self.client.get(f"/{slug}/")
+            self.assertTrue(response.context["readonly"], slug)
+            self.assertEqual(list(response.context["fields"]), [], slug)
+
+    def test_finance_rejects_a_posted_record(self):
+        self.client.post("/finance/", {"action": "create", "market": "Ireland",
+                                       "system": "Email Marketing", "campaign": "Invented",
+                                       "channel": "Email", "revenue": "50000", "cost": "10"})
+        self.assertEqual(FinancialRecord.objects.count(), 0)
+
+    def test_intelligence_rejects_a_posted_decision(self):
+        self.client.post("/intelligence/", {"action": "create", "decision_id": "ER-FAKE",
+                                            "engine": "Made up", "title": "Invented",
+                                            "recommendation": "x", "confidence": "99",
+                                            "impact": "high", "risk_score": "1",
+                                            "governance_level": "review"})
+        self.assertEqual(AiDecision.objects.count(), 0)
+
+    def test_audit_no_longer_borrows_the_analytics_report(self):
+        response = self.client.get("/audit/")
+        self.assertContains(response, "AUDIT LOGS")
+        self.assertNotContains(response, "TOTAL REVENUE")
+
+    def test_analytics_still_shows_its_own_totals(self):
+        self.assertContains(self.client.get("/analytics/"), "TOTAL REVENUE")
+
+
+class SettingsModuleTests(TestCase):
+    """Approved keys can be changed; arbitrary new keys cannot be invented."""
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+        self.setting = Setting.objects.create(group="brand", key="company_name",
+                                              value="Emerald Rozalia Limited")
+
+    def test_no_create_panel_is_offered(self):
+        self.assertEqual(self.client.get("/settings/").context["form_fields"], [])
+
+    def test_editing_an_approved_key_offers_only_its_value(self):
+        response = self.client.get(f"/settings/?edit={self.setting.pk}")
+        self.assertEqual([i["field"].name for i in response.context["form_fields"]], ["value"])
+
+    def test_a_new_key_cannot_be_created(self):
+        self.client.post("/settings/", {"action": "create", "group": "rogue",
+                                        "key": "backdoor", "value": "yes"})
+        self.assertFalse(Setting.objects.filter(key="backdoor").exists())
+        self.assertEqual(Setting.objects.count(), 1)
+
+    def test_an_existing_value_can_still_be_updated(self):
+        self.client.post("/settings/", {"action": "update", "id": self.setting.pk,
+                                        "value": "Emerald Rozalia Ltd"})
+        self.setting.refresh_from_db()
+        self.assertEqual(self.setting.value, "Emerald Rozalia Ltd")
+
+
+class SupportTicketTests(TestCase):
+    """Ticket references are generated server-side and the creation is audited."""
+
+    def setUp(self):
+        User.objects.create_superuser("owner@example.ie", password="Strong-Test-Password-123")
+        self.client.login(username="owner@example.ie", password="Strong-Test-Password-123")
+
+    def _create(self, **extra):
+        payload = {"action": "create", "subject": "Printer offline", "category": "Hardware",
+                   "priority": "high", "description": "The label printer stopped responding.",
+                   "status": "open"}
+        payload.update(extra)
+        return self.client.post("/support/", payload)
+
+    def test_reference_is_generated_and_audited(self):
+        self._create()
+        ticket = SupportTicket.objects.get(subject="Printer offline")
+        self.assertTrue(ticket.reference.startswith("ER-"), ticket.reference)
+        self.assertTrue(AuditLog.objects.filter(event="support_ticket.created").exists())
+
+    def test_a_posted_reference_is_ignored(self):
+        self._create(reference="ER-CHOSEN-BY-HAND")
+        ticket = SupportTicket.objects.get(subject="Printer offline")
+        self.assertNotEqual(ticket.reference, "ER-CHOSEN-BY-HAND")
+
+    def test_two_tickets_do_not_collide(self):
+        self._create()
+        self._create(subject="Second ticket")
+        references = set(SupportTicket.objects.values_list("reference", flat=True))
+        self.assertEqual(len(references), 2)
+

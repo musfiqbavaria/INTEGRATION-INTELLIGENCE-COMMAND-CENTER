@@ -1,0 +1,50 @@
+{% extends 'base.html' %}{% block content %}
+<header class="topbar module-head">
+  <div><h1>EXECUTIVE DASHBOARD</h1><p>Owner overview · live operational data from the current database</p></div>
+  <div class="header-tools"><a class="primary" href="{% url 'command-center' %}">Open Command Center</a></div>
+</header>
+<div class="module-page executive-page">
+  <section class="module-kpis executive-kpis">
+    <article><small>REVENUE</small><b>€ {{ revenue|floatformat:0 }}</b><span>Recorded attribution</span></article>
+    <article><small>NET PROFIT</small><b>€ {{ profit|floatformat:0 }}</b><span>{{ margin }}% margin</span></article>
+    <article><small>CRM RECORDS</small><b>{{ crm_leads }}</b><span>{{ consented }} marketing-consented</span></article>
+    <article><small>CAMPAIGNS</small><b>{{ campaigns }}</b><span>{{ active_campaigns }} active / scheduled</span></article>
+  </section>
+
+  {% if reconciliations %}
+  <section class="panel reconciliation"><h2>DATA RECONCILIATION <span class="count">{{ reconciliations|length }} issue{{ reconciliations|length|pluralize }}</span></h2>
+    {% for issue in reconciliations %}<div class="notice warning">{{ issue }}</div>{% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="executive-grid">
+    <section class="panel"><h2>CHANNEL PERFORMANCE</h2>
+      <div class="summary-grid">
+        <article><small>Email recipients</small><b>{{ email_recipients }}</b><span>{{ email_open_rate }}% open · {{ email_click_rate }}% click</span></article>
+        <article><small>Email failures</small><b>{{ email_failures }}</b><span>Recorded delivery failures</span></article>
+        <article><small>WhatsApp sent</small><b>{{ wa_sent }}</b><span>{{ wa_delivered }} delivered</span></article>
+        <article><small>WhatsApp engagement</small><b>{{ wa_read }}</b><span>{{ wa_replies }} replies</span></article>
+      </div>
+    </section>
+    <section class="panel"><h2>OPERATIONS</h2>
+      <div class="summary-grid">
+        <article><small>Active automations</small><b>{{ active_automations }}</b><span><a href="{% url 'automation-center' %}">Open workflows →</a></span></article>
+        <article><small>Pending AI decisions</small><b>{{ pending_decisions }}</b><span><a href="{% url 'orchestrator' %}">Review decisions →</a></span></article>
+        <article><small>Attributed leads</small><b>{{ attributed_leads }}</b><span>{{ customers }} attributed customers</span></article>
+        <article><small>Owner attention</small><b>{{ attention|length }}</b><span><a href="{% url 'command-center' %}">Open queue →</a></span></article>
+      </div>
+    </section>
+  </div>
+
+  <div class="executive-grid">
+    <section class="panel"><h2>RECENT CAMPAIGNS</h2>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Channel</th><th>Status</th><th>Audience</th><th>Revenue</th><th>Cost</th></tr></thead><tbody>
+      {% for c in recent_campaigns %}<tr><td>{{ c.name }}</td><td>{{ c.channel }}</td><td><span class="badge {{ c.status|lower }}">{{ c.status }}</span></td><td>{{ c.audience_size }}</td><td>€ {{ c.revenue }}</td><td>€ {{ c.cost }}</td></tr>{% empty %}<tr><td colspan="6" class="empty">No campaigns yet.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    <section class="panel"><h2>OWNER ATTENTION</h2>
+      {% for item in attention %}<div class="attention-row"><b>{{ item.title }}</b><span>{{ item.category }} · {{ item.severity|upper }} · {{ item.confidence }}% confidence</span></div>{% empty %}<div class="empty">No open attention items.</div>{% endfor %}
+    </section>
+  </div>
+</div>
+{% endblock %}

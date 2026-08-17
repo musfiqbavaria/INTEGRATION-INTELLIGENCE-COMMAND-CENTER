@@ -1704,3 +1704,6 @@ footer a:hover { color: var(--green); }
 .toolbar .hint { font-size: var(--t-xs); color: #7d8d97; }
 .toolbar code { font-family: var(--font-data); color: var(--green); }
 .toolbar a.action { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Executive dashboard: deliberately distinct from the operational Command Center. */
+.executive-page{display:grid;gap:18px}.executive-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.executive-kpis{margin-bottom:0}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.summary-grid article{border:1px solid var(--line,#20323a);border-radius:10px;padding:14px;display:grid;gap:5px}.summary-grid article b{font-size:24px}.summary-grid article small,.summary-grid article span{opacity:.72}.attention-row{padding:13px 0;border-bottom:1px solid var(--line,#20323a);display:grid;gap:5px}.attention-row:last-child{border-bottom:0}.attention-row span{opacity:.7;font-size:12px}.reconciliation .notice{margin:10px 0}@media(max-width:1050px){.executive-grid{grid-template-columns:1fr}}@media(max-width:700px){.summary-grid{grid-template-columns:1fr}}

@@ -137,10 +137,22 @@ def _back(request,slug):
     return redirect(f"{url}?{params}" if params else url)
 
 def _editable_fields(model,slug):
-    """Fields a user may set through the generic module form."""
-    if slug=="users":
-        # Rights are granted in the Django admin, never here.
-        allowed={"username","email","first_name","last_name","password"}
+    """Fields a user may set through the generic module form.
+
+    Derived intelligence and financial outcomes are system-owned. Generic CRUD
+    must not let an operator manufacture KPIs that later appear in analytics.
+    """
+    allowed_by_slug={
+        "users":{"username","email","first_name","last_name","password"},
+        "campaigns":{"name","channel","status"},
+        "content":{"title","type","channel","status","body","scheduled_at","published_at"},
+        "intelligence":set(),
+        "finance":set(),
+        "settings":{"value"},
+        "support":{"subject","category","priority","description","status"},
+    }
+    if slug in allowed_by_slug:
+        allowed=allowed_by_slug[slug]
         return [f for f in model._meta.fields if f.name in allowed]
     return [f for f in model._meta.fields
             if f.editable and not f.auto_created and f.name not in {"id","created_at","updated_at","owner","user"}]
@@ -250,7 +262,47 @@ def _impact_band(value):
     return IMPACT_BANDS[-1][0]
 
 @login_required
-def dashboard(request):
+def executive_dashboard(request):
+    """Owner-facing business overview.
+
+    This deliberately stays separate from the operational Command Center. It
+    aggregates authoritative records already stored by each module and calls
+    out reconciliation gaps instead of presenting conflicting totals as fact.
+    """
+    records=FinancialRecord.objects.all()
+    totals=records.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
+    revenue=totals["revenue"] or 0; cost=totals["cost"] or 0; profit=revenue-cost
+    attributed_leads=totals["leads"] or 0; attributed_customers=totals["customers"] or 0
+    crm_leads=Lead.objects.count(); consented=Lead.objects.exclude(consent_at=None).exclude(status="unsubscribed").count()
+    campaigns=Campaign.objects.count(); active_campaigns=Campaign.objects.filter(status__in=["active","scheduled","sending"]).count()
+    email=EmailCampaign.objects.aggregate(recipients=Sum("recipients"),opens=Sum("opens"),clicks=Sum("clicks"),failures=Sum("failures"))
+    email_recipients=email["recipients"] or 0; email_opens=email["opens"] or 0; email_clicks=email["clicks"] or 0
+    wa=WhatsAppTemplate.objects.aggregate(sent=Sum("sent"),delivered=Sum("delivered"),read=Sum("read_count"),replies=Sum("replies"))
+    integrations={i.category.lower():i for i in Integration.objects.order_by("category","-updated_at")}
+    attention=AttentionItem.objects.exclude(status__in=["resolved","closed","dismissed"]).order_by("-created_at")[:6]
+    recent_campaigns=Campaign.objects.order_by("-updated_at")[:5]
+    reconciliations=[]
+    if attributed_leads and attributed_leads!=crm_leads:
+        reconciliations.append(f"Analytics attributes {attributed_leads} leads while CRM currently stores {crm_leads} lead/customer records.")
+    if email_recipients==0 and consented:
+        reconciliations.append(f"{consented} contacts have active consent but current email campaign totals show 0 recipients.")
+    context={
+        "title":"Executive Dashboard","revenue":revenue,"cost":cost,"profit":profit,
+        "margin":round((profit/revenue*100),1) if revenue else 0,"crm_leads":crm_leads,
+        "attributed_leads":attributed_leads,"customers":attributed_customers,"consented":consented,
+        "campaigns":campaigns,"active_campaigns":active_campaigns,"email_recipients":email_recipients,
+        "email_open_rate":round(email_opens/email_recipients*100,1) if email_recipients else 0,
+        "email_click_rate":round(email_clicks/email_recipients*100,1) if email_recipients else 0,
+        "email_failures":email["failures"] or 0,"wa_sent":wa["sent"] or 0,"wa_delivered":wa["delivered"] or 0,
+        "wa_read":wa["read"] or 0,"wa_replies":wa["replies"] or 0,"integrations":integrations,
+        "attention":attention,"recent_campaigns":recent_campaigns,"reconciliations":reconciliations,
+        "pending_decisions":AiDecision.objects.filter(status="pending").count(),
+        "active_automations":Automation.objects.filter(status="active").count(),
+    }
+    return render(request,"executive_dashboard.html",context)
+
+@login_required
+def command_center(request):
     now=timezone.now(); today=timezone.localdate()
     window_start=today-timezone.timedelta(days=30); prior_start=today-timezone.timedelta(days=60)
 
@@ -341,7 +393,7 @@ def dashboard(request):
 def module(request,slug):
     if slug in SUPERUSER_ONLY and not request.user.is_superuser:
         return HttpResponse("Not permitted",status=403)
-    readonly=slug in READONLY_SLUGS
+    readonly=slug in READONLY_SLUGS or slug in {"intelligence","finance"}
     if slug=="analytics": model=FinancialRecord
     elif slug in {"users","help"}: model=User if slug=="users" else SupportTicket
     else: model=MODELS.get(slug)
@@ -376,6 +428,17 @@ def module(request,slug):
                 else: target.delete(); messages.success(request,"User deleted")
             else:
                 model.objects.filter(pk=request.POST.get("id")).delete()
+        elif slug=="settings" and action=="create":
+            messages.error(request,"New configuration keys cannot be created here. Edit an approved setting instead.")
+        elif slug=="support" and action=="create":
+            data=_form_values(model,request.POST,{f.name for f in _editable_fields(model,slug)})
+            data["reference"]="ER-"+timezone.localtime().strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(2).upper()
+            try:
+                ticket=model.objects.create(**data)
+                AuditLog.objects.create(user=request.user,event="support_ticket.created",path=request.path,method="POST",
+                                        ip_address=request.META.get("REMOTE_ADDR"),new_values={"reference":ticket.reference,"subject":ticket.subject})
+                messages.success(request,f"Ticket {ticket.reference} created")
+            except Exception as exc: messages.error(request,f"Could not create ticket: {exc}")
         elif slug=="users" and action=="create":
             # Accounts are created through create_user so the password is hashed.
             # Staff and superuser rights are deliberately NOT settable from this
@@ -492,10 +555,15 @@ def module(request,slug):
     rows=[{"pk":obj.pk,"cells":_row_cells(obj)} for obj in items]
     fields=[] if readonly else _editable_fields(model,slug)
 
-    # ?edit=<pk> turns the side panel into a pre-filled edit form.
+    # ?edit=<pk> turns the side panel into a pre-filled edit form. Settings are
+    # intentionally edit-only: approved keys can be changed, arbitrary new keys
+    # are not exposed through a generic create-record panel.
     editing=None
-    if fields and (request.GET.get("edit") or "").isdigit():
-        editing=model.objects.filter(pk=request.GET["edit"]).first()
+    edit_id=request.GET.get("edit") or ""
+    if edit_id.isdigit() and not readonly:
+        editing=model.objects.filter(pk=edit_id).first()
+    if slug=="settings" and editing is None:
+        fields=[]
 
     def _initial(f):
         if editing is None: return ""
@@ -517,7 +585,7 @@ def module(request,slug):
              "fields":fields,"readonly":readonly,"total_count":total,"shown_count":len(rows),
              "query":query,"page_obj":page_obj,"match_count":paginator.count,"can_import":slug=="leads",
              "form_fields":form_fields,"editing":editing,"can_unsubscribe":slug=="leads"}
-    if readonly:
+    if slug=="analytics":
         agg=FinancialRecord.objects.aggregate(revenue=Sum("revenue"),cost=Sum("cost"),leads=Sum("leads"),customers=Sum("customers"))
         revenue=agg["revenue"] or 0; cost=agg["cost"] or 0
         context.update({"title":"Analytics & Reports","totals":{"revenue":revenue,"cost":cost,"profit":revenue-cost,
